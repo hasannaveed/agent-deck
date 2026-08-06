@@ -19,6 +19,19 @@ function run(command, args, { quiet = false } = {}) {
   return result;
 }
 
+function scheduleEnableOnNextLogin() {
+  const current = run("gsettings", ["get", "org.gnome.shell", "enabled-extensions"], { quiet: true });
+  if (current.status !== 0) return false;
+  const extensions = [...String(current.stdout).matchAll(/'((?:\\.|[^'])*)'/g)].map((match) =>
+    match[1].replaceAll("\\'", "'").replaceAll("\\\\", "\\"),
+  );
+  if (!extensions.includes(UUID)) extensions.push(UUID);
+  const value = `[${extensions.map((item) => `'${item.replaceAll("\\", "\\\\").replaceAll("'", "\\'")}'`).join(", ")}]`;
+  return (
+    run("gsettings", ["set", "org.gnome.shell", "enabled-extensions", value], { quiet: true }).status === 0
+  );
+}
+
 if (process.platform !== "linux") throw new Error("The GNOME connector is only available on Linux.");
 
 const shellVersion = run("gnome-shell", ["--version"]).stdout.trim();
@@ -57,9 +70,14 @@ try {
     process.stdout.write(`Installed and enabled ${UUID}.\n`);
   } else {
     const dataHome = process.env.XDG_DATA_HOME || path.join(homedir(), ".local", "share");
+    const scheduled = scheduleEnableOnNextLogin();
     process.stdout.write(`Installed ${UUID} under ${path.join(dataHome, "gnome-shell", "extensions")}.\n`);
-    process.stdout.write("GNOME Shell has not loaded it yet. Log out and back in, then run:\n");
-    process.stdout.write(`  gnome-extensions enable ${UUID}\n`);
+    if (scheduled) {
+      process.stdout.write("GNOME Shell will enable it automatically after you log out and back in.\n");
+    } else {
+      process.stdout.write("GNOME Shell has not loaded it yet. Log out and back in, then run:\n");
+      process.stdout.write(`  gnome-extensions enable ${UUID}\n`);
+    }
   }
 } finally {
   rmSync(temporaryDirectory, { recursive: true, force: true });
