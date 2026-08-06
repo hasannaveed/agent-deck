@@ -103,5 +103,13 @@ test("only live sessions with a supported terminal target are focusable", () => 
   assert.equal(decorateSession(session).focusable, true);
   assert.equal(decorateSession(session).focusProvider, "wezterm");
   assert.equal(decorateSession({ ...session, presence: "closed" }).focusable, false);
-  assert.equal(decorateSession({ ...session, terminalKind: "gnome-terminal" }).focusable, false);
+  assert.equal(
+    decorateSession({
+      ...session,
+      terminalKind: "gnome-terminal",
+      terminalTarget: "/org/gnome/Terminal/screen/abc_123",
+      terminalInstance: ":1.142",
+    }).focusable,
+    true,
+  );
 });

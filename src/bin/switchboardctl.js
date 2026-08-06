@@ -8,7 +8,8 @@ import { translateHarnessEvent } from "../adapters/index.js";
 import { SwitchboardClient } from "../client.js";
 import { ensureRuntimeHome, getRuntimeConfig } from "../config.js";
 import { EVENT_KINDS, HARNESSES } from "../domain.js";
-import { findHarnessAncestor } from "../discovery/linux.js";
+import { findHarnessAncestor, terminalLocatorFrom } from "../discovery/linux.js";
+import { captureGnomeTerminal } from "../gnome-bridge.js";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 
@@ -21,6 +22,7 @@ Usage:
   switchboardctl emit --harness <codex|claude|opencode> [--strict]
   switchboardctl event --harness <name> --session <id> --kind <kind> [options]
   switchboardctl demo [--clear]
+  switchboardctl link
   switchboardctl seen|unread|dismiss <session-id>
   switchboardctl integrations
 
@@ -85,13 +87,34 @@ async function emitHook(args) {
     if (!events.length) return;
     const config = getRuntimeConfig();
     const client = new SwitchboardClient(config);
-    await client.emit(events, { timeoutMs: 450 });
+    const link =
+      ancestor.terminalKind === "gnome-terminal"
+        ? captureGnomeTerminal(ancestor, { allowLast: false }).catch(() => null)
+        : Promise.resolve(null);
+    await Promise.all([client.emit(events, { timeoutMs: 450 }), link]);
   } catch (error) {
     if (strict || process.env.SWITCHBOARD_DEBUG) {
       process.stderr.write(`[switchboard hook] ${error.message}\n`);
       if (strict) process.exitCode = 1;
     }
   }
+}
+
+async function linkCurrentTerminal() {
+  const terminal = terminalLocatorFrom({
+    environment: new Map(Object.entries(process.env)),
+    tty: null,
+  });
+  if (terminal.kind !== "gnome-terminal") {
+    throw new Error("Run `switchboardctl link` inside the GNOME Terminal tab you want Switchboard to remember.");
+  }
+  const result = await captureGnomeTerminal({
+    terminalKind: terminal.kind,
+    terminalTarget: terminal.target,
+    terminalInstance: terminal.instance,
+  });
+  if (!result.ok) throw new Error(result.message);
+  process.stdout.write(`${result.message}\n`);
 }
 
 function normalizedEventFromArgs(args) {
@@ -192,7 +215,8 @@ function printIntegrations() {
   process.stdout.write(`Native integration templates\n\n`);
   process.stdout.write(`Codex:      ${path.join(ROOT, "integrations/codex/hooks.json")}\n`);
   process.stdout.write(`Claude Code:${path.join(ROOT, "integrations/claude/settings.json")}\n`);
-  process.stdout.write(`OpenCode:   ${path.join(ROOT, "integrations/opencode/switchboard.js")}\n\n`);
+  process.stdout.write(`OpenCode:   ${path.join(ROOT, "integrations/opencode/switchboard.js")}\n`);
+  process.stdout.write(`GNOME Shell:${path.join(ROOT, "integrations/gnome-shell")}\n\n`);
   process.stdout.write(`See ${path.join(ROOT, "integrations/README.md")} for safe merge instructions.\n`);
 }
 
@@ -216,6 +240,10 @@ async function main() {
   }
   if (command === "integrations") {
     printIntegrations();
+    return;
+  }
+  if (command === "link") {
+    await linkCurrentTerminal();
     return;
   }
   if (command === "list") {

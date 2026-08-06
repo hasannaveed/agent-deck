@@ -59,6 +59,20 @@ test("terminal discovery captures safe structured focus targets", () => {
   });
   assert.equal(kitty.target, "9");
   assert.equal(kitty.instance, "unix:/tmp/kitty-control");
+
+  const gnome = terminalLocatorFrom({
+    environment: new Map([
+      ["GNOME_TERMINAL_SCREEN", "/org/gnome/Terminal/screen/abc_123"],
+      ["GNOME_TERMINAL_SERVICE", ":1.142"],
+    ]),
+    tty: "/dev/pts/11",
+  });
+  assert.deepEqual(gnome, {
+    label: "GNOME Terminal · pts/11",
+    kind: "gnome-terminal",
+    target: "/org/gnome/Terminal/screen/abc_123",
+    instance: ":1.142",
+  });
 });
 
 test("tmux pane titles provide Codex status hints without reading pane content", () => {

@@ -1,0 +1,7 @@
+{
+  "uuid": "agent-switchboard@skylabs-ai.com",
+  "name": "Agent Switchboard Terminal Bridge",
+  "description": "Focuses GNOME Terminal windows and tabs linked to Agent Switchboard sessions.",
+  "shell-version": ["42", "43", "44"],
+  "version": 1
+}

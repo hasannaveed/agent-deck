@@ -125,6 +125,69 @@ test("WezTerm and kitty focus commands use validated numeric targets", async () 
   ]);
 });
 
+test("GNOME Terminal focus uses the shell bridge without opening another window", async () => {
+  const calls = [];
+  const result = await focusSession(
+    liveSession({
+      terminalKind: "gnome-terminal",
+      terminalTarget: "/org/gnome/Terminal/screen/abc_123",
+      terminalInstance: ":1.142",
+    }),
+    {
+      which: (name) => (name === "gdbus" ? "/usr/bin/gdbus" : null),
+      run: async (file, args) => {
+        calls.push([file, args]);
+        return { stdout: "(true, 'Focused the linked GNOME Terminal tab.')\n", stderr: "" };
+      },
+    },
+  );
+
+  assert.deepEqual(result, {
+    ok: true,
+    provider: "gnome-terminal",
+    reused: true,
+    message: "Focused the linked GNOME Terminal tab.",
+  });
+  assert.deepEqual(calls, [
+    [
+      "/usr/bin/gdbus",
+      [
+        "call",
+        "--session",
+        "--dest",
+        "com.skylabs.AgentSwitchboard.GnomeBridge",
+        "--object-path",
+        "/com/skylabs/AgentSwitchboard/GnomeBridge",
+        "--method",
+        "com.skylabs.AgentSwitchboard.GnomeBridge1.FocusTerminal",
+        ":1.142",
+        "/org/gnome/Terminal/screen/abc_123",
+      ],
+    ],
+  ]);
+});
+
+test("GNOME Terminal reports an unlinked tab instead of launching a replacement", async () => {
+  const result = await focusSession(
+    liveSession({
+      terminalKind: "gnome-terminal",
+      terminalTarget: "/org/gnome/Terminal/screen/abc_123",
+      terminalInstance: ":1.142",
+    }),
+    {
+      which: () => "/usr/bin/gdbus",
+      run: async () => ({
+        stdout: "(false, 'This tab is not linked yet.')\n",
+        stderr: "",
+      }),
+    },
+  );
+
+  assert.equal(result.ok, false);
+  assert.equal(result.code, "gnome_terminal_unlinked");
+  assert.equal(result.message, "This tab is not linked yet.");
+});
+
 test("unsupported, stale, and malformed targets fail without executing commands", async () => {
   let executed = false;
   const options = {
@@ -141,5 +204,14 @@ test("unsupported, stale, and malformed targets fail without executing commands"
     "kitty_unavailable",
   );
   assert.equal((await focusSession(liveSession({ terminalKind: null, terminalTarget: null }), options)).code, "unsupported_terminal");
+  assert.equal(
+    (
+      await focusSession(
+        liveSession({ terminalKind: "gnome-terminal", terminalTarget: "$(touch nope)", terminalInstance: ":1.2" }),
+        options,
+      )
+    ).code,
+    "gnome_terminal_unavailable",
+  );
   assert.equal(executed, false);
 });

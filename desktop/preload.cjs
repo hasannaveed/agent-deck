@@ -8,6 +8,7 @@ contextBridge.exposeInMainWorld(
     minimize: () => ipcRenderer.invoke("desktop:minimize"),
     hide: () => ipcRenderer.invoke("desktop:hide"),
     focusSession: (sessionId) => ipcRenderer.invoke("desktop:focus-session", sessionId),
+    linkSession: (sessionId) => ipcRenderer.invoke("desktop:link-session", sessionId),
     onStateChanged: (callback) => {
       if (typeof callback !== "function") return;
       ipcRenderer.on("desktop:state-changed", (_event, state) => callback(state));

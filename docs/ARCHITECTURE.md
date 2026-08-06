@@ -133,9 +133,13 @@ launching another terminal.
 Focus providers are deliberately terminal-specific. tmux and Zellij open an
 attached graphical terminal when needed, but tmux first reuses any client already
 attached to the target session. WezTerm uses its CLI pane activation; kitty
-requires its explicit remote-control Unix socket. Unsupported terminals remain
-visible but are reported as non-focusable instead of using title matching or
-injecting input.
+requires its explicit remote-control Unix socket. GNOME Terminal sessions carry
+a D-Bus service and screen object path but no public activation method. The
+optional GNOME Shell bridge links that screen to the currently focused Mutter
+window and active tab, then performs later activation inside the compositor.
+Links contain coordinates only and are stored under the same private state
+directory. Unsupported terminals remain visible but are reported as
+non-focusable instead of using title matching or injecting input.
 
 ## Adding a harness
 

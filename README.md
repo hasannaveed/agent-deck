@@ -8,7 +8,7 @@ into an inbox.
 It includes:
 
 - a native Electron desktop pane with always-on-top, tray, and hide/show controls;
-- click-to-jump routing for tmux, WezTerm, kitty, and Zellij sessions;
+- click-to-jump routing for tmux, WezTerm, kitty, Zellij, and linked GNOME Terminal sessions;
 - an interactive terminal UI with a prominent harness column;
 - a local SQLite event store and Server-Sent Events stream;
 - native adapters for Codex, Claude Code, and OpenCode;
@@ -49,6 +49,13 @@ npm run desktop:install
 npm run desktop:install -- --autostart
 ```
 
+On GNOME 42–44, install the companion extension for exact switching to ordinary
+GNOME Terminal windows and tabs:
+
+```bash
+npm run gnome:install
+```
+
 The generated launcher points to this checkout, so keep the project at the same
 path. For a headless daemon plus TUI, use `npm run daemon` and `npm run tui`.
 
@@ -87,6 +94,7 @@ not interfere with the harness.
 npm start                           open the native desktop pane
 npm run daemon                      run only the local daemon
 npm run tui                         open the interactive terminal UI
+npm run gnome:install               install the GNOME Terminal focus connector
 switchboardd [--no-discovery]       run the local daemon
 switchboard                         open the TUI (daemon must be running)
 switchboard --once                  print active sessions with harness labels
@@ -95,6 +103,7 @@ switchboardctl doctor               inspect runtime, daemon, and harness setup
 switchboardctl list [--json]        print active and recent sessions
 switchboardctl demo                 load all representative states
 switchboardctl demo --clear         remove only demo-generated sessions
+switchboardctl link                 link the focused GNOME Terminal tab
 switchboardctl seen <id>            acknowledge completed work
 switchboardctl unread <id>          put a session back in the unread queue
 switchboardctl dismiss <id>         hide a closed session
@@ -128,15 +137,25 @@ Switchboard records a structured terminal target alongside each live session:
 - kitty: focuses the exact window when kitty was started with remote control and
   a `KITTY_LISTEN_ON` Unix socket;
 - Zellij: opens a graphical terminal attached to the matching Zellij session.
+- GNOME Terminal: uses its inherited screen ID plus a small GNOME Shell
+  extension to activate the linked Wayland window and select its tab.
+
+GNOME Terminal deliberately does not expose a public “activate this existing
+screen” method. After installing the connector, focus an agent's terminal tab
+and choose **Link focused terminal** in its Switchboard details. The pinned pane
+does not steal keyboard focus, so this records the terminal underneath it. You
+can also run `switchboardctl link` in a terminal before starting an agent. A
+link is stored by GNOME screen ID and normally lasts for that tab's lifetime;
+relink after moving the tab to another window or reordering its tabs.
 
 The TUI uses these same validated targets when you press `Enter`. If the TUI and
 agent are on the same tmux server, it switches the existing client directly to
 that pane; otherwise it activates or opens the recorded terminal target.
 
-Plain terminal processes do not expose a portable focus identifier. When a safe
-jump route is unavailable, clicking opens the signal detail and explains why.
-This is especially important on Wayland, where applications cannot generally
-force an unrelated window to the foreground.
+Other plain terminal processes do not expose a portable focus identifier. When
+a safe jump route is unavailable, clicking opens the signal detail and explains
+why. This is especially important on Wayland, where applications cannot
+generally force an unrelated window to the foreground.
 
 ## What appears in the queue
 

@@ -43,6 +43,26 @@ This uses OpenCode's stable event-plugin API; see the official
 
 Restart already-running harness sessions after changing integration files.
 
+## GNOME Terminal on Wayland
+
+GNOME Terminal supplies a stable screen object path to child processes, but it
+does not expose a public method that raises that existing screen. Install the
+bundled GNOME Shell bridge on GNOME 42–44:
+
+```text
+npm run gnome:install
+```
+
+Then focus the target terminal tab and use **Link focused terminal** in the
+desktop pane. Because the pinned pane is non-focusable on Linux, clicking the
+link action records the terminal window underneath it. Alternatively, run
+`switchboardctl link` from the terminal before starting Codex, Claude Code, or
+OpenCode. The bridge stores only the GNOME D-Bus service, screen and window
+paths, and tab index; it does not inspect terminal contents.
+
+GNOME may require a logout and login before loading a newly installed local
+extension. The installer prints the exact enable command when that is necessary.
+
 ## Run the daemon at login (optional)
 
 After `switchboardd` is on `PATH`, install the included user service:

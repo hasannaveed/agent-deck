@@ -206,7 +206,7 @@ const PRIORITY = Object.freeze({
 export function decorateSession(session) {
   const primaryState = derivePrimaryState(session);
   const hasProvider =
-    ["tmux", "wezterm", "zellij"].includes(session.terminalKind) ||
+    ["tmux", "wezterm", "zellij", "gnome-terminal"].includes(session.terminalKind) ||
     (session.terminalKind === "kitty" && Boolean(session.terminalInstance));
   const focusable = session.presence === "live" && hasProvider && Boolean(session.terminalTarget);
   return {

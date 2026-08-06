@@ -2,6 +2,7 @@ import { constants, accessSync } from "node:fs";
 import { execFile, spawn } from "node:child_process";
 import path from "node:path";
 import { promisify } from "node:util";
+import { focusGnomeTerminal } from "./gnome-bridge.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -192,6 +193,10 @@ export async function focusSession(
       await launch(terminal.file, [...terminal.prefix, zellij, "attach", target]);
       return { ok: true, provider: "zellij", launched: true, message: `Opened Zellij session ${target}.` };
     }
+
+    if (session.terminalKind === "gnome-terminal") {
+      return focusGnomeTerminal(session, { env, which, run });
+    }
   } catch (error) {
     return { ok: false, code: "focus_failed", message: `Could not open the session: ${cleanMessage(error)}` };
   }
@@ -199,6 +204,6 @@ export async function focusSession(
   return {
     ok: false,
     code: "unsupported_terminal",
-    message: "Direct switching needs tmux, WezTerm, kitty, or Zellij metadata for this session.",
+    message: "Direct switching needs tmux, WezTerm, kitty, Zellij, or a linked GNOME Terminal screen.",
   };
 }

@@ -17,6 +17,7 @@
     "start": "electron .",
     "gui": "electron .",
     "desktop:install": "node scripts/install-desktop.js",
+    "gnome:install": "node scripts/install-gnome-extension.js",
     "daemon": "node src/bin/switchboardd.js",
     "tui": "node src/bin/switchboard.js",
     "doctor": "node src/bin/switchboardctl.js doctor",

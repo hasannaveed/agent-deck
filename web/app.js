@@ -285,6 +285,13 @@ function renderDetail() {
     openButton.addEventListener("click", () => activateSession(session));
     actions.append(openButton);
   }
+  if (desktop && session.presence === "live" && session.terminalKind === "gnome-terminal") {
+    const linkButton = node("button", "action-button", "Link focused terminal");
+    linkButton.type = "button";
+    linkButton.title = "Focus this GNOME Terminal tab, then click to remember its exact window and tab";
+    linkButton.addEventListener("click", () => linkTerminal(session));
+    actions.append(linkButton);
+  }
   const readButton = node("button", "action-button", session.unread ? "Mark seen" : "Mark unread");
   readButton.type = "button";
   readButton.addEventListener("click", () => setReadState(session));
@@ -467,6 +474,17 @@ async function activateSession(session) {
   } finally {
     state.focusInFlightId = null;
     setSessionJumping(session.id, false);
+  }
+}
+
+async function linkTerminal(session) {
+  if (!desktop?.linkSession) return;
+  try {
+    const result = await desktop.linkSession(session.id);
+    showToast(result.message);
+    if (result.ok) await loadDetail(session.id);
+  } catch (error) {
+    showToast(error.message);
   }
 }
 

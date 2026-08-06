@@ -124,6 +124,15 @@ export function terminalLocatorFrom(processInfo) {
       instance: null,
     };
   }
+  if (env.get("GNOME_TERMINAL_SCREEN") && env.get("GNOME_TERMINAL_SERVICE")) {
+    const tty = processInfo.tty?.startsWith("/dev/") ? processInfo.tty.slice(5) : processInfo.tty || null;
+    return {
+      label: `GNOME Terminal${tty ? ` · ${tty}` : ""}`,
+      kind: "gnome-terminal",
+      target: env.get("GNOME_TERMINAL_SCREEN"),
+      instance: env.get("GNOME_TERMINAL_SERVICE"),
+    };
+  }
   if (env.get("TERM_PROGRAM")) return { label: env.get("TERM_PROGRAM"), kind: null, target: null, instance: null };
   const tty = processInfo.tty?.startsWith("/dev/") ? processInfo.tty.slice(5) : processInfo.tty || null;
   return { label: tty, kind: null, target: null, instance: null };

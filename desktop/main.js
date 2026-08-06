@@ -16,6 +16,7 @@ import { fileURLToPath } from "node:url";
 import { SwitchboardClient } from "../src/client.js";
 import { ensureRuntimeHome, getRuntimeConfig } from "../src/config.js";
 import { focusSession } from "../src/focus.js";
+import { captureGnomeTerminal } from "../src/gnome-bridge.js";
 import { startSwitchboardRuntime } from "../src/runtime.js";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -214,6 +215,17 @@ function focusSessionOnce(sessionId) {
   return operation;
 }
 
+async function linkGnomeTerminalSession(sessionId) {
+  const detail = await client.session(sessionId);
+  if (detail.session.presence !== "live") {
+    return { ok: false, code: "not_live", message: "This session is no longer running." };
+  }
+  if (detail.session.terminalKind !== "gnome-terminal") {
+    return { ok: false, code: "not_gnome_terminal", message: "This session is not running in GNOME Terminal." };
+  }
+  return captureGnomeTerminal(detail.session, { allowLast: true });
+}
+
 function registerIpc() {
   ipcMain.handle("desktop:get-state", (event) => {
     if (!trustedSender(event)) throw new Error("Untrusted renderer");
@@ -238,6 +250,13 @@ function registerIpc() {
       return { ok: false, code: "invalid_session", message: "The selected session identifier is invalid." };
     }
     return focusSessionOnce(sessionId);
+  });
+  ipcMain.handle("desktop:link-session", async (event, sessionId) => {
+    if (!trustedSender(event)) throw new Error("Untrusted renderer");
+    if (typeof sessionId !== "string" || !/^(codex|claude|opencode):[a-f0-9]{24}$/.test(sessionId)) {
+      return { ok: false, code: "invalid_session", message: "The selected session identifier is invalid." };
+    }
+    return linkGnomeTerminalSession(sessionId);
   });
 }
 

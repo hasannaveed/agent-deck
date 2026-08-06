@@ -12,6 +12,7 @@ const JSON_FILES = [
   "web/manifest.webmanifest",
   "integrations/codex/hooks.json",
   "integrations/claude/settings.json",
+  "integrations/gnome-shell/metadata.json",
 ];
 
 function filesBelow(directory) {
