@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#090a12" />
+    <meta name="description" content="A local activity switchboard for coding-agent sessions." />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="stylesheet" href="/styles.css" />
+    <title>Agent Switchboard</title>
+  </head>
+  <body>
+    <a class="skip-link" href="#session-board">Skip to sessions</a>
+    <div class="app-shell">
+      <div class="desktop-titlebar" id="desktop-titlebar" hidden>
+        <span class="desktop-window-title">Session desk</span>
+        <div class="desktop-window-controls">
+          <button id="desktop-pin" type="button" title="Toggle always on top" aria-label="Toggle always on top">⌖</button>
+          <button id="desktop-minimize" type="button" title="Minimize" aria-label="Minimize">−</button>
+          <button id="desktop-hide" type="button" title="Hide to tray" aria-label="Hide to tray">×</button>
+        </div>
+      </div>
+
+      <header class="overview-card">
+        <div class="topbar">
+          <div class="brand-lockup">
+            <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+            <div>
+              <strong>Switchboard</strong>
+              <span class="brand-caption">Agent traffic</span>
+            </div>
+          </div>
+          <div class="topbar-tools">
+            <div class="connection-state" id="connection-state" title="Connecting">
+              <span class="connection-lamp" aria-hidden="true"></span>
+              <span id="connection-copy">Connecting</span>
+            </div>
+            <button
+              class="tools-toggle"
+              id="tools-toggle"
+              type="button"
+              aria-controls="control-deck"
+              aria-expanded="false"
+              title="Search and filter"
+            ><span aria-hidden="true">⌕</span><span class="visually-hidden">Search and filter</span></button>
+          </div>
+        </div>
+
+        <div class="overview-copy" aria-live="polite">
+          <span class="overview-kicker">Sessions now</span>
+          <div class="live-total"><strong id="live-count">0</strong><span>live</span></div>
+        </div>
+
+        <div class="traffic-rail" id="traffic-rail" aria-label="No live sessions">
+          <span class="traffic-segment rail-error" id="rail-error"></span>
+          <span class="traffic-segment rail-attention" id="rail-attention"></span>
+          <span class="traffic-segment rail-unread" id="rail-unread"></span>
+          <span class="traffic-segment rail-working" id="rail-working"></span>
+          <span class="traffic-segment rail-open" id="rail-open"></span>
+        </div>
+
+        <div class="traffic-summary">
+          <span><i class="summary-dot summary-working" aria-hidden="true"></i><strong id="working-count">0</strong> working</span>
+          <span><i class="summary-dot summary-unread" aria-hidden="true"></i><strong id="unread-count">0</strong> unread</span>
+          <span><i class="summary-dot summary-attention" aria-hidden="true"></i><strong id="needs-count">0</strong> needs</span>
+          <span><i class="summary-dot summary-open" aria-hidden="true"></i><strong id="open-count">0</strong> open</span>
+        </div>
+      </header>
+
+      <nav class="control-deck" id="control-deck" aria-label="Session filters" hidden>
+        <div class="filter-strip" role="group" aria-label="Filter sessions">
+          <button class="filter-button is-active" type="button" data-filter="active">Active</button>
+          <button class="filter-button" type="button" data-filter="needs_attention">
+            Needs <span class="filter-count" id="filter-needs-count">0</span>
+          </button>
+          <button class="filter-button" type="button" data-filter="working">Work</button>
+          <button class="filter-button" type="button" data-filter="unread">Unread</button>
+          <button class="filter-button" type="button" data-filter="open">Open</button>
+          <button class="filter-button" type="button" data-filter="recent">Recent</button>
+        </div>
+        <label class="search-control">
+          <span aria-hidden="true">⌕</span>
+          <span class="visually-hidden">Search sessions</span>
+          <input id="session-search" type="search" autocomplete="off" placeholder="Search" />
+        </label>
+      </nav>
+
+      <main class="workspace">
+        <section class="queue-pane" id="session-board" aria-label="Agent sessions">
+          <div class="queue-heading">
+            <h1 id="queue-title">Active sessions</h1>
+            <span id="queue-count">0</span>
+          </div>
+          <div id="session-groups" class="session-list" role="list"></div>
+          <div id="empty-state" class="empty-state" hidden>
+            <span class="empty-mark" aria-hidden="true">○</span>
+            <h1>No active sessions</h1>
+            <p>Start Codex, Claude Code, or OpenCode. New sessions will appear here.</p>
+            <code>switchboardctl doctor</code>
+          </div>
+        </section>
+
+        <aside class="detail-pane" id="detail-pane" aria-label="Session detail">
+          <div class="detail-toolbar">
+            <button class="detail-close" id="detail-close" type="button" aria-label="Close session detail">← Back</button>
+          </div>
+          <div id="detail-empty" class="detail-empty">
+            <span>Choose a session</span>
+            <p>Click a row to open it, or choose its state to inspect details.</p>
+          </div>
+          <div id="detail-content" hidden></div>
+        </aside>
+      </main>
+    </div>
+
+    <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>

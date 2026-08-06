@@ -1,0 +1,30 @@
+{
+  "name": "agent-switchboard",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A local activity switchboard for Codex, Claude Code, and OpenCode sessions.",
+  "type": "module",
+  "main": "desktop/main.js",
+  "engines": {
+    "node": ">=22.5.0"
+  },
+  "bin": {
+    "switchboard": "./src/bin/switchboard.js",
+    "switchboardctl": "./src/bin/switchboardctl.js",
+    "switchboardd": "./src/bin/switchboardd.js"
+  },
+  "scripts": {
+    "start": "electron .",
+    "gui": "electron .",
+    "desktop:install": "node scripts/install-desktop.js",
+    "daemon": "node src/bin/switchboardd.js",
+    "tui": "node src/bin/switchboard.js",
+    "doctor": "node src/bin/switchboardctl.js doctor",
+    "test": "node --test",
+    "check": "node scripts/check.js"
+  },
+  "license": "MIT",
+  "devDependencies": {
+    "electron": "^43.3.0"
+  }
+}

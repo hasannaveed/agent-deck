@@ -1,0 +1,15 @@
+[Unit]
+Description=Agent Switchboard session monitor
+After=default.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/env switchboardd
+Restart=on-failure
+RestartSec=2
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+
+[Install]
+WantedBy=default.target
