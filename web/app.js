@@ -1,3 +1,5 @@
+import { sessionNavigationCommand } from "./session-navigation.js";
+
 const STATE_LABELS = {
   error: "Error",
   needs_attention: "Needs you",
@@ -43,6 +45,7 @@ const state = {
   desktopState: null,
   toolsOpen: false,
   focusInFlightId: null,
+  terminalRepairId: null,
 };
 
 const elements = {
@@ -75,6 +78,9 @@ const elements = {
   desktopPin: document.querySelector("#desktop-pin"),
   desktopMinimize: document.querySelector("#desktop-minimize"),
   desktopHide: document.querySelector("#desktop-hide"),
+  desktopDock: document.querySelector("#desktop-dock"),
+  dockLiveCount: document.querySelector("#dock-live-count"),
+  dockStatus: document.querySelector("#dock-status"),
 };
 
 function node(tag, className, text) {
@@ -141,11 +147,11 @@ function filteredSessions() {
   return state.snapshot.sessions.filter((session) => {
     const matchesFilter =
       state.filter === "active"
-        ? session.presence === "live" || ["error", "needs_attention", "unread"].includes(session.primaryState)
+        ? session.presence === "live"
         : state.filter === "needs_attention"
-          ? session.primaryState === "needs_attention"
+          ? session.presence === "live" && session.primaryState === "needs_attention"
           : state.filter === "unread"
-            ? session.primaryState === "unread"
+            ? session.presence === "live" && session.primaryState === "unread"
             : session.group === state.filter;
     const haystack = [session.title, session.project, session.cwd, session.branch, session.harness]
       .filter(Boolean)
@@ -157,10 +163,13 @@ function filteredSessions() {
 
 function buildSessionRow(session) {
   const row = node("div", `session-row state-${session.primaryState}`);
+  const canJump = Boolean(desktop && session.focusable);
   row.dataset.harness = session.harness;
   row.dataset.sessionId = session.id;
   row.setAttribute("role", "listitem");
-  row.classList.toggle("is-selected", session.id === state.selectedId);
+  const selected = session.id === state.selectedId;
+  row.classList.toggle("is-selected", selected);
+  if (selected) row.setAttribute("aria-current", "true");
   row.classList.toggle("is-jumping", session.id === state.focusInFlightId);
 
   const open = node("button", "session-open");
@@ -168,7 +177,7 @@ function buildSessionRow(session) {
   open.dataset.sessionId = session.id;
   open.setAttribute(
     "aria-label",
-    `Open ${session.title}, ${HARNESS_LABELS[session.harness] || session.harness}, ${STATE_LABELS[session.primaryState]}`,
+    `${canJump ? "Open" : "Inspect"} ${session.title}, ${HARNESS_LABELS[session.harness] || session.harness}, ${STATE_LABELS[session.primaryState]}`,
   );
   open.append(harnessMark(session, "row-harness-mark"));
 
@@ -182,8 +191,8 @@ function buildSessionRow(session) {
   meta.append(relativeTimeNode("session-age", session.lastEventAt || session.updatedAt));
   copy.append(meta);
   open.append(copy);
-  open.append(node("span", "session-jump", "↗"));
-  open.addEventListener("click", () => activateSession(session));
+  open.append(node("span", "session-jump", canJump ? "↗" : "…"));
+  open.addEventListener("click", () => openSession(session));
 
   const inspect = node("button", "inspect-session");
   inspect.type = "button";
@@ -214,7 +223,10 @@ function renderSessions() {
 
 function updateSessionSelection() {
   for (const row of elements.groups.querySelectorAll(".session-row")) {
-    row.classList.toggle("is-selected", row.dataset.sessionId === state.selectedId);
+    const selected = row.dataset.sessionId === state.selectedId;
+    row.classList.toggle("is-selected", selected);
+    if (selected) row.setAttribute("aria-current", "true");
+    else row.removeAttribute("aria-current");
   }
 }
 
@@ -279,16 +291,21 @@ function renderDetail() {
   elements.detailContent.append(header);
 
   const actions = node("div", "detail-actions");
-  if (desktop && session.presence === "live") {
+  if (desktop && session.focusable) {
     const openButton = node("button", "action-button action-primary", "Open session");
     openButton.type = "button";
     openButton.addEventListener("click", () => activateSession(session));
     actions.append(openButton);
   }
-  if (desktop && session.presence === "live" && session.terminalKind === "gnome-terminal") {
-    const linkButton = node("button", "action-button", "Link focused terminal");
+  if (
+    desktop &&
+    session.presence === "live" &&
+    session.terminalKind === "gnome-terminal" &&
+    state.terminalRepairId === session.id
+  ) {
+    const linkButton = node("button", "action-button", "Repair terminal jump");
     linkButton.type = "button";
-    linkButton.title = "Focus this GNOME Terminal tab, then click to remember its exact window and tab";
+    linkButton.title = "Focus the target GNOME Terminal tab, then click here to repair its automatic jump route";
     linkButton.addEventListener("click", () => linkTerminal(session));
     actions.append(linkButton);
   }
@@ -369,6 +386,28 @@ function renderHeader() {
   elements.workingCount.textContent = String(working);
   elements.unreadCount.textContent = String(unread);
   elements.openCount.textContent = String(open);
+  const dockState = errors
+    ? "error"
+    : attention
+      ? "needs_attention"
+      : unread
+        ? "unread"
+        : working
+          ? "working"
+          : "idle";
+  const dockStateLabel = {
+    error: "error",
+    needs_attention: "needs your input",
+    unread: "unread result",
+    working: "working",
+    idle: "open",
+  }[dockState];
+  elements.dockLiveCount.textContent = String(liveSessions.length);
+  elements.dockStatus.dataset.state = dockState;
+  elements.desktopDock.setAttribute(
+    "aria-label",
+    `Expand Switchboard, ${liveSessions.length} live, ${dockStateLabel}`,
+  );
   elements.filterNeedsCount.textContent = String(
     state.snapshot.sessions.filter((session) => session.primaryState === "needs_attention").length,
   );
@@ -445,6 +484,11 @@ async function selectSession(id) {
   await loadDetail(id);
 }
 
+async function openSession(session) {
+  if (desktop && session.focusable) await activateSession(session);
+  else await selectSession(session.id);
+}
+
 async function activateSession(session) {
   if (state.focusInFlightId) return;
   state.selectedId = session.id;
@@ -461,11 +505,13 @@ async function activateSession(session) {
     const result = await desktop.focusSession(session.id);
     showToast(result.message);
     if (result.ok) {
+      if (state.terminalRepairId === session.id) state.terminalRepairId = null;
       state.selectedId = null;
       state.detail = null;
       document.body.classList.remove("detail-open");
       updateSessionSelection();
     } else {
+      if (result.code === "gnome_terminal_unlinked") state.terminalRepairId = session.id;
       await selectSession(session.id);
     }
   } catch (error) {
@@ -482,7 +528,10 @@ async function linkTerminal(session) {
   try {
     const result = await desktop.linkSession(session.id);
     showToast(result.message);
-    if (result.ok) await loadDetail(session.id);
+    if (result.ok) {
+      state.terminalRepairId = null;
+      await loadDetail(session.id);
+    }
   } catch (error) {
     showToast(error.message);
   }
@@ -578,6 +627,13 @@ function highlightSession(id) {
   updateSessionSelection();
 }
 
+function focusSessionRow(id) {
+  const row = elements.groups.querySelector(`.session-row[data-session-id="${CSS.escape(id)}"]`);
+  if (!row) return;
+  row.scrollIntoView({ block: "nearest", inline: "nearest" });
+  row.querySelector(".session-open")?.focus({ preventScroll: true });
+}
+
 document.addEventListener("keydown", async (event) => {
   const isTyping = event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement;
   if (event.key === "/" && !isTyping) {
@@ -602,16 +658,15 @@ document.addEventListener("keydown", async (event) => {
 
   const sessions = filteredSessions();
   const currentIndex = sessions.findIndex((session) => session.id === state.selectedId);
-  if (["j", "ArrowDown", "k", "ArrowUp"].includes(event.key) && sessions.length) {
+  const navigation = sessionNavigationCommand(event.key, currentIndex, sessions.length);
+  if (navigation?.action === "select") {
     event.preventDefault();
-    const delta = event.key === "j" || event.key === "ArrowDown" ? 1 : -1;
-    const nextIndex = currentIndex < 0 ? 0 : (currentIndex + delta + sessions.length) % sessions.length;
-    highlightSession(sessions[nextIndex].id);
-    document.querySelector(`.session-open[data-session-id="${CSS.escape(sessions[nextIndex].id)}"]`)?.focus();
-  } else if (event.key === "Enter" && state.selectedId) {
+    const session = sessions[navigation.index];
+    highlightSession(session.id);
+    focusSessionRow(session.id);
+  } else if (navigation?.action === "activate" && event.target.closest?.(".session-open")) {
     event.preventDefault();
-    const session = sessions.find((candidate) => candidate.id === state.selectedId);
-    if (session) await activateSession(session);
+    await openSession(sessions[navigation.index]);
   } else if (event.key.toLowerCase() === "i" && state.selectedId) {
     event.preventDefault();
     await selectSession(state.selectedId);
@@ -628,16 +683,16 @@ document.addEventListener("keydown", async (event) => {
 
 function applyDesktopState(nextState) {
   state.desktopState = nextState;
+  document.documentElement.classList.toggle("desktop-collapsed", Boolean(nextState?.collapsed));
   document.documentElement.classList.toggle("hard-pinned", Boolean(nextState?.hardPinned));
-  elements.search.disabled = Boolean(nextState?.hardPinned);
-  elements.search.placeholder = nextState?.hardPinned ? "Unpin to type" : "Search";
+  elements.search.disabled = false;
+  elements.search.placeholder = "Search";
   elements.desktopPin.classList.toggle("is-active", Boolean(nextState?.pinned));
   elements.desktopPin.setAttribute("aria-pressed", String(Boolean(nextState?.pinned)));
   elements.desktopPin.title = nextState?.pinned
-    ? nextState.hardPinned
-      ? "Pinned above every workspace; unpin to move or type"
-      : "Stop keeping this pane on top"
+    ? "Stop keeping this pane on top"
     : "Keep this pane on top";
+  elements.desktopDock.setAttribute("aria-expanded", String(!nextState?.collapsed));
 }
 
 async function initializeDesktopShell() {
@@ -647,8 +702,9 @@ async function initializeDesktopShell() {
   applyDesktopState(await desktop.getState());
   desktop.onStateChanged(applyDesktopState);
   elements.desktopPin.addEventListener("click", async () => applyDesktopState(await desktop.togglePinned()));
-  elements.desktopMinimize.addEventListener("click", () => desktop.minimize());
-  elements.desktopHide.addEventListener("click", () => desktop.hide());
+  elements.desktopMinimize.addEventListener("click", async () => applyDesktopState(await desktop.minimize()));
+  elements.desktopHide.addEventListener("click", async () => applyDesktopState(await desktop.hide()));
+  elements.desktopDock.addEventListener("click", async () => applyDesktopState(await desktop.expand()));
 }
 
 async function bootstrap() {

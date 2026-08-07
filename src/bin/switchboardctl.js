@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
-import { accessSync, constants } from "node:fs";
+import { accessSync, constants, existsSync } from "node:fs";
+import { homedir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
@@ -8,8 +9,14 @@ import { translateHarnessEvent } from "../adapters/index.js";
 import { SwitchboardClient } from "../client.js";
 import { ensureRuntimeHome, getRuntimeConfig } from "../config.js";
 import { EVENT_KINDS, HARNESSES } from "../domain.js";
-import { findHarnessAncestor, terminalLocatorFrom } from "../discovery/linux.js";
+import {
+  findHarnessAncestor,
+  gnomeTerminalLocatorFrom,
+  terminalLocatorFrom,
+} from "../discovery/linux.js";
 import { captureGnomeTerminal } from "../gnome-bridge.js";
+import { gnomeTerminalTargetFrom, isAutoLinkHookEvent } from "../terminal-auto-link.js";
+import { newestAttachedTmuxClientTerminal } from "../tmux-clients.js";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 
@@ -61,6 +68,13 @@ function commandOnPath(name) {
   return null;
 }
 
+function openCodePluginPath(env = process.env) {
+  const configHome = env.XDG_CONFIG_HOME
+    ? path.resolve(env.XDG_CONFIG_HOME)
+    : path.join(homedir(), ".config");
+  return path.join(configHome, "opencode", "plugins", "switchboard.js");
+}
+
 function printSessionList(snapshot) {
   if (!snapshot.sessions.length) {
     process.stdout.write("No active or recent sessions.\n");
@@ -83,14 +97,23 @@ async function emitHook(args) {
     const input = await readStdin();
     const raw = JSON.parse(input || "{}");
     const ancestor = findHarnessAncestor(harness) || {};
+    if (ancestor.nested) return;
     const events = translateHarnessEvent(harness, raw, ancestor);
     if (!events.length) return;
     const config = getRuntimeConfig();
     const client = new SwitchboardClient(config);
-    const link =
-      ancestor.terminalKind === "gnome-terminal"
-        ? captureGnomeTerminal(ancestor, { allowLast: false }).catch(() => null)
-        : Promise.resolve(null);
+    // Only foreground-originated lifecycle events are safe capture points. A
+    // background completion or permission event may fire while another tab in
+    // the same GNOME Terminal process is focused.
+    const attachedTerminal =
+      isAutoLinkHookEvent(events) && ancestor.terminalKind === "tmux"
+        ? newestAttachedTmuxClientTerminal(ancestor)
+        : null;
+    const gnomeTerminal =
+      gnomeTerminalTargetFrom(attachedTerminal) || gnomeTerminalTargetFrom(ancestor);
+    const link = isAutoLinkHookEvent(events) && gnomeTerminal
+      ? captureGnomeTerminal(gnomeTerminal, { allowLast: false }).catch(() => null)
+      : Promise.resolve(null);
     await Promise.all([client.emit(events, { timeoutMs: 450 }), link]);
   } catch (error) {
     if (strict || process.env.SWITCHBOARD_DEBUG) {
@@ -101,10 +124,11 @@ async function emitHook(args) {
 }
 
 async function linkCurrentTerminal() {
-  const terminal = terminalLocatorFrom({
+  const processInfo = {
     environment: new Map(Object.entries(process.env)),
     tty: null,
-  });
+  };
+  const terminal = gnomeTerminalLocatorFrom(processInfo) || terminalLocatorFrom(processInfo);
   if (terminal.kind !== "gnome-terminal") {
     throw new Error("Run `switchboardctl link` inside the GNOME Terminal tab you want Switchboard to remember.");
   }
@@ -196,6 +220,12 @@ async function doctor() {
     const executable = commandOnPath(harness === "claude" ? "claude" : harness);
     rows.push([harness, executable ? "found" : "not found", executable || "Install or add it to PATH"]);
   }
+  const openCodePlugin = openCodePluginPath();
+  rows.push([
+    "OpenCode events",
+    existsSync(openCodePlugin) ? "ready" : "missing",
+    existsSync(openCodePlugin) ? openCodePlugin : "Run npm run opencode:install",
+  ]);
   try {
     const health = await new SwitchboardClient(config).health();
     rows.push(["Daemon", "ready", `${config.baseUrl} · v${health.version}`]);

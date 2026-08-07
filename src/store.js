@@ -330,11 +330,11 @@ export class SwitchboardStore extends EventEmitter {
     return row?.id || null;
   }
 
-  listLiveProcessSessions() {
+  listLivePidSessions() {
     return this.db
       .prepare(
         `SELECT * FROM sessions
-         WHERE presence = 'live' AND telemetry = 'process' AND nativeSessionId LIKE 'process-%'`,
+         WHERE presence = 'live' AND pid IS NOT NULL`,
       )
       .all()
       .map(fromDatabaseSession);

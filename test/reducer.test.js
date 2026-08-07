@@ -3,6 +3,7 @@ import test from "node:test";
 import { EVENT_KINDS, normalizeEvent } from "../src/domain.js";
 import {
   decorateSession,
+  derivePrimaryState,
   reduceSession,
   shouldIncludeSession,
   sortSessions,
@@ -58,6 +59,23 @@ test("the reducer follows the working, attention, unread, and seen lifecycle", (
   assert.equal(decorateSession(session).primaryState, "working");
 });
 
+test("native busy updates do not clear an explicit human-input request", () => {
+  let session = reduceSession(null, event(EVENT_KINDS.SESSION_STARTED));
+  session = reduceSession(
+    session,
+    event(EVENT_KINDS.ATTENTION_REQUESTED, {
+      telemetry: "native",
+      attention: { kind: "approval", requestId: "request-race", summary: "Approve command" },
+    }),
+  );
+
+  session = reduceSession(session, event(EVENT_KINDS.WORK_STARTED, { telemetry: "native" }));
+  assert.equal(decorateSession(session).primaryState, "needs_attention");
+
+  session = reduceSession(session, event(EVENT_KINDS.ATTENTION_RESOLVED, { telemetry: "native" }));
+  assert.equal(decorateSession(session).primaryState, "working");
+});
+
 test("errors outrank attention, unread, and working", () => {
   const base = reduceSession(null, event(EVENT_KINDS.SESSION_STARTED));
   const sessions = [
@@ -74,7 +92,7 @@ test("errors outrank attention, unread, and working", () => {
   );
 });
 
-test("closed sessions expire, while unresolved signals stay until dismissed", () => {
+test("closed sessions become recent and expire even with unresolved signals", () => {
   const now = Date.now();
   const old = {
     ...reduceSession(null, event(EVENT_KINDS.SESSION_STARTED)),
@@ -82,9 +100,10 @@ test("closed sessions expire, while unresolved signals stay until dismissed", ()
     updatedAt: now - 48 * 60 * 60 * 1000,
   };
   assert.equal(shouldIncludeSession(old, now, 24), false);
-  assert.equal(shouldIncludeSession({ ...old, unread: true }, now, 24), true);
-  assert.equal(shouldIncludeSession({ ...old, errorKind: "failed" }, now, 24), true);
+  assert.equal(shouldIncludeSession({ ...old, unread: true }, now, 24), false);
+  assert.equal(shouldIncludeSession({ ...old, errorKind: "failed" }, now, 24), false);
   assert.equal(shouldIncludeSession({ ...old, unread: true, dismissed: true }, now, 24), false);
+  assert.equal(derivePrimaryState({ ...old, unread: true, errorKind: "failed" }), "recent");
 });
 
 test("only live sessions with a supported terminal target are focusable", () => {

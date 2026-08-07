@@ -32,14 +32,23 @@ official [Claude Code hooks reference](https://code.claude.com/docs/en/hooks).
 
 ## OpenCode
 
-Copy `opencode/switchboard.js` to the user plugin directory:
+Install the native event bridge with:
 
-```text
-~/.config/opencode/plugins/switchboard.js
+```bash
+npm run opencode:install
 ```
 
-This uses OpenCode's stable event-plugin API; see the official
-[OpenCode plugin reference](https://dev.opencode.ai/docs/plugins/).
+The installer writes `~/.config/opencode/plugins/switchboard.js` with absolute
+paths to this checkout, so it does not depend on `switchboardctl` being on
+`PATH`. At startup the plugin also checks OpenCode's pending permission and
+question lists, covering a prompt that was raised just before a restart. It uses
+OpenCode's event-plugin API; see the official
+[OpenCode plugin reference](https://opencode.ai/docs/plugins/).
+
+The plugin also marks tool-launched shells as child work. It adds that marker to
+tmux's runtime `update-environment` list so an OpenCode process launched by a
+parent agent in a detached tmux session is suppressed as nested work. No command
+text is inspected or stored.
 
 Restart already-running harness sessions after changing integration files.
 
@@ -53,12 +62,19 @@ bundled GNOME Shell bridge on GNOME 42–44:
 npm run gnome:install
 ```
 
-Then focus the target terminal tab and use **Link focused terminal** in the
-desktop pane. Because the pinned pane is non-focusable on Linux, clicking the
-link action records the terminal window underneath it. Alternatively, run
-`switchboardctl link` from the terminal before starting Codex, Claude Code, or
-OpenCode. The bridge stores only the GNOME D-Bus service, screen and window
-paths, and tab index; it does not inspect terminal contents.
+New Codex, Claude Code, and OpenCode processes are linked automatically while
+their launch tab is focused. This includes the host GNOME Terminal tab for an
+attached tmux client. Native `SessionStart` and user-prompt events also refresh
+the route at safe foreground moments. Background events never change a route.
+When the desktop pane is pinned, the connector also makes it sticky and raises
+it above the terminal after a jump without taking keyboard focus from the agent.
+
+Manual linking is only a recovery path for an agent that predates the connector,
+or a tab that was moved or reordered. Try to open that session once, focus the
+target terminal tab, then choose **Repair terminal jump** in the desktop pane.
+Alternatively, run `switchboardctl link` inside that tab. The bridge stores only
+the GNOME D-Bus service, screen and window paths, and tab index; it does not
+inspect terminal contents.
 
 GNOME may require a logout and login before loading a newly installed local
 extension. The installer prints the exact enable command when that is necessary.

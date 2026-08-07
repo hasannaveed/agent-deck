@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const ELECTRON = path.join(ROOT, "node_modules", ".bin", "electron");
+const RUNNER = path.join(ROOT, "scripts", "run-desktop.js");
 const ICON = path.join(ROOT, "web", "favicon.svg");
 const autostart = process.argv.includes("--autostart");
 
@@ -24,7 +25,7 @@ Type=Application
 Version=1.0
 Name=Agent Switchboard
 Comment=Monitor active Codex, Claude Code, and OpenCode sessions
-Exec=${quoteExec(ELECTRON)} --class=agent-switchboard ${quoteExec(ROOT)}
+Exec=${quoteExec(process.execPath)} ${quoteExec(RUNNER)}
 Icon=${ICON}
 Terminal=false
 Categories=Development;

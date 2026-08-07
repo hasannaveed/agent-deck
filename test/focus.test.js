@@ -65,6 +65,90 @@ test("TUI tmux focus reuses the current client on the same server", async () => 
   assert.equal(launched, false);
 });
 
+test("non-tmux TUI attaches to tmux in its current terminal without opening a window", async () => {
+  const runs = [];
+  const attachments = [];
+  let launched = false;
+  const result = await focusSession(liveSession(), {
+    env: {},
+    reuseCurrentTmux: true,
+    attachCurrentTmux: async (file, args) => attachments.push([file, args]),
+    which: (name) => (name === "tmux" ? "/usr/bin/tmux" : null),
+    run: async (file, args) => {
+      runs.push([file, args]);
+      return args.includes("display-message")
+        ? { stdout: "agents\n", stderr: "" }
+        : { stdout: "", stderr: "" };
+    },
+    launch: async () => {
+      launched = true;
+    },
+  });
+
+  assert.deepEqual(result, {
+    ok: true,
+    provider: "tmux",
+    reused: true,
+    attached: true,
+    message: "Returned from tmux pane %7.",
+  });
+  assert.deepEqual(attachments, [
+    [
+      "/usr/bin/tmux",
+      ["-S", "/tmp/tmux-1000/default", "attach-session", "-t", "agents"],
+    ],
+  ]);
+  assert.equal(runs.length, 2);
+  assert.equal(launched, false);
+});
+
+test("non-tmux TUI focuses an existing attached GNOME tmux client first", async () => {
+  const runs = [];
+  let attached = false;
+  let launched = false;
+  const result = await focusSession(liveSession(), {
+    env: {},
+    reuseCurrentTmux: true,
+    focusAttachedTmux: true,
+    attachCurrentTmux: async () => {
+      attached = true;
+    },
+    resolveTmuxClientTerminal: (pid) =>
+      pid === 321
+        ? {
+            terminalKind: "gnome-terminal",
+            terminalTarget: "/org/gnome/Terminal/screen/abc_123",
+            terminalInstance: ":1.42",
+          }
+        : null,
+    which: (name) =>
+      ({ tmux: "/usr/bin/tmux", gdbus: "/usr/bin/gdbus" })[name] || null,
+    run: async (file, args) => {
+      runs.push([file, args]);
+      if (args.includes("display-message")) return { stdout: "agents\t1\n", stderr: "" };
+      if (args.includes("list-clients")) return { stdout: "321\t1700000100\t/dev/pts/8\n", stderr: "" };
+      if (file === "/usr/bin/gdbus") return { stdout: "(true, 'Focused terminal.')\n", stderr: "" };
+      return { stdout: "", stderr: "" };
+    },
+    launch: async () => {
+      launched = true;
+    },
+  });
+
+  assert.deepEqual(result, {
+    ok: true,
+    provider: "tmux",
+    reused: true,
+    focused: true,
+    clientPid: 321,
+    message: "Focused the existing tmux terminal at pane %7.",
+  });
+  assert.equal(runs.some(([, args]) => args.includes("list-clients")), true);
+  assert.equal(runs.some(([file]) => file === "/usr/bin/gdbus"), true);
+  assert.equal(attached, false);
+  assert.equal(launched, false);
+});
+
 test("desktop tmux focus reuses an attached terminal instead of opening another window", async () => {
   const runs = [];
   let launched = false;
@@ -87,6 +171,67 @@ test("desktop tmux focus reuses an attached terminal instead of opening another 
   assert.equal(runs.length, 2);
   assert.equal(runs[0][1].at(-1), "#{session_name}\t#{session_attached}");
   assert.equal(launched, false);
+});
+
+test("desktop tmux focus repairs a missed GNOME link before activating the terminal", async () => {
+  const bridgeMethods = [];
+  let focusAttempts = 0;
+  const result = await focusSession(liveSession(), {
+    reuseAttachedTmux: true,
+    focusAttachedTmux: true,
+    resolveTmuxClientTerminal: () => ({
+      terminalKind: "gnome-terminal",
+      terminalTarget: "/org/gnome/Terminal/screen/abc_123",
+      terminalInstance: ":1.42",
+    }),
+    which: (name) => ({ tmux: "/usr/bin/tmux", gdbus: "/usr/bin/gdbus" })[name] || null,
+    run: async (file, args) => {
+      if (args.includes("display-message")) return { stdout: "agents\t1\n", stderr: "" };
+      if (args.includes("list-clients")) return { stdout: "321\t1700000100\t/dev/pts/8\n", stderr: "" };
+      if (file !== "/usr/bin/gdbus") return { stdout: "", stderr: "" };
+
+      const method = args.find((value) => value.startsWith("com.skylabs.AgentSwitchboard.GnomeBridge1."));
+      bridgeMethods.push(method);
+      if (method.endsWith("CaptureTerminal")) {
+        assert.equal(args.at(-1), "true");
+        return { stdout: "(true, 'Recovered terminal link.')\n", stderr: "" };
+      }
+      focusAttempts += 1;
+      return focusAttempts === 1
+        ? { stdout: "(false, 'Automatic linking was missed.')\n", stderr: "" }
+        : { stdout: "(true, 'Focused terminal.')\n", stderr: "" };
+    },
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.focused, true);
+  assert.deepEqual(bridgeMethods, [
+    "com.skylabs.AgentSwitchboard.GnomeBridge1.FocusTerminal",
+    "com.skylabs.AgentSwitchboard.GnomeBridge1.CaptureTerminal",
+    "com.skylabs.AgentSwitchboard.GnomeBridge1.FocusTerminal",
+  ]);
+});
+
+test("desktop tmux focus does not report success when its terminal cannot be activated", async () => {
+  const result = await focusSession(liveSession(), {
+    reuseAttachedTmux: true,
+    focusAttachedTmux: true,
+    resolveTmuxClientTerminal: () => ({
+      terminalKind: "gnome-terminal",
+      terminalTarget: "/org/gnome/Terminal/screen/abc_123",
+      terminalInstance: ":1.42",
+    }),
+    which: (name) => ({ tmux: "/usr/bin/tmux", gdbus: "/usr/bin/gdbus" })[name] || null,
+    run: async (file, args) => {
+      if (args.includes("display-message")) return { stdout: "agents\t1\n", stderr: "" };
+      if (args.includes("list-clients")) return { stdout: "321\t1700000100\t/dev/pts/8\n", stderr: "" };
+      if (file === "/usr/bin/gdbus") return { stdout: "(false, 'Automatic linking was missed.')\n", stderr: "" };
+      return { stdout: "", stderr: "" };
+    },
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.code, "gnome_terminal_unlinked");
 });
 
 test("WezTerm and kitty focus commands use validated numeric targets", async () => {
@@ -185,7 +330,10 @@ test("GNOME Terminal reports an unlinked tab instead of launching a replacement"
 
   assert.equal(result.ok, false);
   assert.equal(result.code, "gnome_terminal_unlinked");
-  assert.equal(result.message, "This tab is not linked yet.");
+  assert.equal(
+    result.message,
+    "Automatic terminal linking was missed. Focus the target tab, then use Repair terminal jump or run switchboardctl link there.",
+  );
 });
 
 test("unsupported, stale, and malformed targets fail without executing commands", async () => {

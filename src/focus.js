@@ -2,7 +2,12 @@ import { constants, accessSync } from "node:fs";
 import { execFile, spawn } from "node:child_process";
 import path from "node:path";
 import { promisify } from "node:util";
-import { focusGnomeTerminal } from "./gnome-bridge.js";
+import { captureGnomeTerminal, focusGnomeTerminal } from "./gnome-bridge.js";
+import {
+  parseTmuxClients,
+  terminalTargetForTmuxClient,
+  TMUX_CLIENT_FORMAT,
+} from "./tmux-clients.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -87,6 +92,61 @@ function cleanMessage(error) {
   return String(source).replaceAll(/\s+/g, " ").trim().slice(0, 240);
 }
 
+async function focusAttachedTmuxTerminal({
+  tmux,
+  base,
+  sessionName,
+  target,
+  env,
+  which,
+  run,
+  resolveTmuxClientTerminal,
+}) {
+  let clients;
+  try {
+    const result = await run(tmux, [
+      ...base,
+      "list-clients",
+      "-t",
+      sessionName,
+      "-F",
+      TMUX_CLIENT_FORMAT,
+    ]);
+    clients = parseTmuxClients(result.stdout);
+  } catch {
+    return null;
+  }
+
+  let activationFailure = null;
+  for (const client of clients) {
+    let terminal;
+    try {
+      terminal = await resolveTmuxClientTerminal(client.pid);
+    } catch {
+      continue;
+    }
+    if (terminal?.terminalKind !== "gnome-terminal") continue;
+    let focused = await focusGnomeTerminal(terminal, { env, which, run });
+    if (!focused.ok && focused.code === "gnome_terminal_unlinked") {
+      const captured = await captureGnomeTerminal(terminal, { env, which, run, allowLast: true });
+      if (captured.ok) focused = await focusGnomeTerminal(terminal, { env, which, run });
+    }
+    if (!focused.ok) {
+      activationFailure = focused;
+      continue;
+    }
+    return {
+      ok: true,
+      provider: "tmux",
+      reused: true,
+      focused: true,
+      clientPid: client.pid,
+      message: `Focused the existing tmux terminal at pane ${target}.`,
+    };
+  }
+  return activationFailure;
+}
+
 export async function focusSession(
   session,
   {
@@ -96,6 +156,9 @@ export async function focusSession(
     launch = defaultLaunch,
     reuseCurrentTmux = false,
     reuseAttachedTmux = false,
+    focusAttachedTmux = false,
+    attachCurrentTmux = null,
+    resolveTmuxClientTerminal = terminalTargetForTmuxClient,
   } = {},
 ) {
   if (!session || session.presence !== "live") {
@@ -113,37 +176,62 @@ export async function focusSession(
       const currentInstance = validUnixPath(String(env.TMUX || "").split(",", 1)[0]);
       const canReuseCurrentClient = reuseCurrentTmux && instance && currentInstance === instance;
       const base = instance ? ["-S", instance] : [];
-      const format = reuseAttachedTmux ? "#{session_name}\t#{session_attached}" : "#{session_name}";
+      const inspectAttachedClients = reuseAttachedTmux || focusAttachedTmux;
+      const format = inspectAttachedClients ? "#{session_name}\t#{session_attached}" : "#{session_name}";
       const result = await run(tmux, [...base, "display-message", "-p", "-t", target, format]);
       const status = String(result.stdout || "").trim();
       const [sessionName, attachedText, ...extra] = status.split("\t");
       if (!sessionName || sessionName.includes("\n") || extra.length) {
         throw new Error("tmux did not return a valid session name");
       }
-      const attachedClients = reuseAttachedTmux && /^\d+$/.test(attachedText || "") ? Number(attachedText) : 0;
-      if (reuseAttachedTmux && !/^\d+$/.test(attachedText || "")) {
+      const attachedClients = inspectAttachedClients && /^\d+$/.test(attachedText || "") ? Number(attachedText) : 0;
+      if (inspectAttachedClients && !/^\d+$/.test(attachedText || "")) {
         throw new Error("tmux did not return its attached-client count");
-      }
-      const canReuseAttachedClient = reuseAttachedTmux && attachedClients > 0;
-      const terminal = canReuseCurrentClient || canReuseAttachedClient ? null : resolveTerminalLauncher(which);
-      if (!canReuseCurrentClient && !canReuseAttachedClient && !terminal) {
-        return {
-          ok: false,
-          code: "terminal_unavailable",
-          message: "No attached tmux client or supported graphical terminal was found.",
-        };
       }
 
       await run(tmux, [...base, "select-window", "-t", target, ";", "select-pane", "-t", target]);
       if (canReuseCurrentClient) {
         return { ok: true, provider: "tmux", reused: true, message: `Switched to tmux pane ${target}.` };
       }
+      if (focusAttachedTmux && attachedClients > 0) {
+        const focused = await focusAttachedTmuxTerminal({
+          tmux,
+          base,
+          sessionName,
+          target,
+          env,
+          which,
+          run,
+          resolveTmuxClientTerminal,
+        });
+        if (focused) return focused;
+      }
+      const canReuseAttachedClient = reuseAttachedTmux && attachedClients > 0;
       if (canReuseAttachedClient) {
         return {
           ok: true,
           provider: "tmux",
           reused: true,
           message: `Switched the attached terminal to tmux pane ${target}.`,
+        };
+      }
+      const canAttachCurrentTerminal = typeof attachCurrentTmux === "function";
+      if (canAttachCurrentTerminal) {
+        await attachCurrentTmux(tmux, [...base, "attach-session", "-t", sessionName]);
+        return {
+          ok: true,
+          provider: "tmux",
+          reused: true,
+          attached: true,
+          message: `Returned from tmux pane ${target}.`,
+        };
+      }
+      const terminal = resolveTerminalLauncher(which);
+      if (!terminal) {
+        return {
+          ok: false,
+          code: "terminal_unavailable",
+          message: "No attached tmux client or supported graphical terminal was found.",
         };
       }
       await launch(terminal.file, [...terminal.prefix, tmux, ...base, "attach-session", "-t", sessionName]);
@@ -204,6 +292,6 @@ export async function focusSession(
   return {
     ok: false,
     code: "unsupported_terminal",
-    message: "Direct switching needs tmux, WezTerm, kitty, Zellij, or a linked GNOME Terminal screen.",
+    message: "Direct switching needs tmux, WezTerm, kitty, Zellij, or an automatically routed GNOME Terminal screen.",
   };
 }

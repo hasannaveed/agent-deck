@@ -108,10 +108,11 @@ explicit plugin events.
 
 ## Retention and acknowledgement
 
-The read model always includes live sessions and unresolved error, attention, or
-unread signals. It includes ordinary closed sessions only within the recent time
-window, and caps that recent group independently. Dismissal hides a closed row;
-new native activity automatically brings it back.
+The Active read-model view includes live sessions only. A confirmed process exit
+moves the row to `recent` regardless of unread, attention, or error signals. The
+read model retains closed sessions only within the recent time window and caps
+that group independently. Dismissal hides a closed row; new native activity
+automatically brings it back.
 
 A successful desktop or TUI jump advances `seenSeq` to `completionSeq`.
 Inspecting a row, merely moving keyboard selection, or attempting an unavailable
@@ -128,16 +129,27 @@ windows, and renderer permission requests are denied.
 The TUI fetches the same trusted detail record and passes it through the same
 argument-array focus providers. When it is attached to the same tmux server as
 the target, it selects the existing pane in the current client instead of
-launching another terminal.
+launching another terminal. Otherwise, it resolves the target session's tmux
+clients by recent activity, reads only their structured terminal identifiers,
+and asks the appropriate focus provider to raise the existing client window.
+For GNOME this is the client PID's inherited terminal service and screen path,
+never its title or terminal content. A missed GNOME association is recovered
+through the connector's remembered terminal and activation is retried; pane
+selection alone is not a successful desktop jump. If no exact attached route is available,
+the TUI suspends its raw screen and attaches the current terminal interactively;
+detaching restores the TUI and polling loop. A jump lock prevents overlapping
+attachment attempts.
 
 Focus providers are deliberately terminal-specific. tmux and Zellij open an
 attached graphical terminal when needed, but tmux first reuses any client already
 attached to the target session. WezTerm uses its CLI pane activation; kitty
 requires its explicit remote-control Unix socket. GNOME Terminal sessions carry
 a D-Bus service and screen object path but no public activation method. The
-optional GNOME Shell bridge links that screen to the currently focused Mutter
-window and active tab, then performs later activation inside the compositor.
-Links contain coordinates only and are stored under the same private state
+optional GNOME Shell bridge automatically associates a freshly launched agent's
+screen with the currently focused Mutter window and active tab, then performs
+later activation inside the compositor. Session-start and human-prompt hooks
+are also safe association points; background hooks cannot rewrite a route.
+Routes contain coordinates only and are stored under the same private state
 directory. Unsupported terminals remain visible but are reported as
 non-focusable instead of using title matching or injecting input.
 

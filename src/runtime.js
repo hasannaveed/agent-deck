@@ -1,7 +1,13 @@
 import { ensureRuntimeHome, getRuntimeConfig } from "./config.js";
 import { LinuxProcessDiscovery } from "./discovery/linux.js";
+import { captureGnomeTerminal } from "./gnome-bridge.js";
 import { createSwitchboardServer } from "./server.js";
 import { SwitchboardStore } from "./store.js";
+import {
+  gnomeTerminalTargetFrom,
+  shouldAutoLinkDiscoveredTerminal,
+} from "./terminal-auto-link.js";
+import { newestAttachedTmuxClientTerminal } from "./tmux-clients.js";
 
 export async function startSwitchboardRuntime({
   config = getRuntimeConfig(),
@@ -23,6 +29,18 @@ export async function startSwitchboardRuntime({
         intervalMs: config.discoveryIntervalMs,
         activityIdleMs: config.activityIdleMs,
         logger,
+        onProcessDiscovered: async (item, occurredAt) => {
+          const attachedTerminal =
+            item.terminalKind === "tmux" ? newestAttachedTmuxClientTerminal(item) : null;
+          const terminal =
+            gnomeTerminalTargetFrom(attachedTerminal) || gnomeTerminalTargetFrom(item);
+          const candidate = terminal ? { ...terminal, startedAt: item.startedAt } : null;
+          if (!shouldAutoLinkDiscoveredTerminal(candidate, occurredAt, config.discoveryIntervalMs)) return;
+          const result = await captureGnomeTerminal(terminal, { allowLast: false });
+          if (!result.ok && process.env.SWITCHBOARD_DEBUG) {
+            logger.warn?.(`[gnome] automatic terminal link skipped: ${result.message}`);
+          }
+        },
       })
     : null;
   const service = createSwitchboardServer({

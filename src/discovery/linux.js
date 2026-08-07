@@ -16,6 +16,7 @@ const CPU_TICKS_PER_SECOND = 100;
 // that background churn before Switchboard labels a process as working.
 const ACTIVE_CPU_FRACTION = 0.08;
 const ACTIVE_IO_CHARS_PER_SECOND = 32 * 1024;
+export const NESTED_HARNESS_ENV = "AGENT_SWITCHBOARD_CHILD";
 
 function safeRead(file, encoding = "utf8") {
   try {
@@ -89,6 +90,18 @@ function parseEnvironment(buffer) {
   return values;
 }
 
+export function gnomeTerminalLocatorFrom(processInfo) {
+  const env = processInfo.environment;
+  if (!env.get("GNOME_TERMINAL_SCREEN") || !env.get("GNOME_TERMINAL_SERVICE")) return null;
+  const tty = processInfo.tty?.startsWith("/dev/") ? processInfo.tty.slice(5) : processInfo.tty || null;
+  return {
+    label: `GNOME Terminal${tty ? ` · ${tty}` : ""}`,
+    kind: "gnome-terminal",
+    target: env.get("GNOME_TERMINAL_SCREEN"),
+    instance: env.get("GNOME_TERMINAL_SERVICE"),
+  };
+}
+
 export function terminalLocatorFrom(processInfo) {
   const env = processInfo.environment;
   if (env.get("TMUX") && env.get("TMUX_PANE")) {
@@ -124,15 +137,8 @@ export function terminalLocatorFrom(processInfo) {
       instance: null,
     };
   }
-  if (env.get("GNOME_TERMINAL_SCREEN") && env.get("GNOME_TERMINAL_SERVICE")) {
-    const tty = processInfo.tty?.startsWith("/dev/") ? processInfo.tty.slice(5) : processInfo.tty || null;
-    return {
-      label: `GNOME Terminal${tty ? ` · ${tty}` : ""}`,
-      kind: "gnome-terminal",
-      target: env.get("GNOME_TERMINAL_SCREEN"),
-      instance: env.get("GNOME_TERMINAL_SERVICE"),
-    };
-  }
+  const gnomeTerminal = gnomeTerminalLocatorFrom(processInfo);
+  if (gnomeTerminal) return gnomeTerminal;
   if (env.get("TERM_PROGRAM")) return { label: env.get("TERM_PROGRAM"), kind: null, target: null, instance: null };
   const tty = processInfo.tty?.startsWith("/dev/") ? processInfo.tty.slice(5) : processInfo.tty || null;
   return { label: tty, kind: null, target: null, instance: null };
@@ -161,6 +167,10 @@ export function readTerminalTitle(processInfo, execute = execFileSync) {
   } catch {
     return null;
   }
+}
+
+export function hasNestedHarnessMarker(processInfo) {
+  return processInfo.environment?.get(NESTED_HARNESS_ENV) === "1";
 }
 
 export function activityHintFromTerminalTitle(harness, title) {
@@ -252,11 +262,33 @@ export function readProcessInfo(pid) {
   };
   info.harness = detectHarnessProcess(info);
   const terminal = terminalLocatorFrom(info);
+  const hostTerminal = gnomeTerminalLocatorFrom(info);
   info.terminal = terminal.label;
   info.terminalKind = terminal.kind;
   info.terminalTarget = terminal.target;
   info.terminalInstance = terminal.instance;
+  if (terminal.kind !== "gnome-terminal" && hostTerminal) {
+    info.hostTerminalKind = hostTerminal.kind;
+    info.hostTerminalTarget = hostTerminal.target;
+    info.hostTerminalInstance = hostTerminal.instance;
+  }
   return info;
+}
+
+export function isNestedHarnessProcess(processInfo, read = readProcessInfo) {
+  if (!processInfo?.harness) return false;
+  if (hasNestedHarnessMarker(processInfo)) return true;
+
+  const visited = new Set([processInfo.pid]);
+  let pid = processInfo.parentPid;
+  for (let depth = 0; depth < 16 && pid > 1 && !visited.has(pid); depth += 1) {
+    visited.add(pid);
+    const ancestor = read(pid);
+    if (!ancestor) return false;
+    if (ancestor.harness) return true;
+    pid = ancestor.parentPid;
+  }
+  return false;
 }
 
 export function isInteractiveHarnessProcess(processInfo) {
@@ -308,6 +340,7 @@ export function scanHarnessProcesses() {
     if (pid === process.pid) continue;
     const info = readProcessInfo(pid);
     if (!isInteractiveHarnessProcess(info)) continue;
+    if (isNestedHarnessProcess(info)) continue;
     const project = info.cwd ? path.basename(info.cwd) : null;
     const terminalTitle = readTerminalTitle(info);
     const titleHint = activityHintFromTerminalTitle(info.harness, terminalTitle);
@@ -330,13 +363,17 @@ export function scanHarnessProcesses() {
   return found;
 }
 
-export function findHarnessAncestor(expectedHarness = null, startPid = process.ppid) {
+export function findHarnessAncestor(
+  expectedHarness = null,
+  startPid = process.ppid,
+  read = readProcessInfo,
+) {
   if (process.platform !== "linux") return null;
   const visited = new Set();
   let pid = startPid;
   for (let depth = 0; depth < 12 && pid > 1 && !visited.has(pid); depth += 1) {
     visited.add(pid);
-    const info = readProcessInfo(pid);
+    const info = read(pid);
     if (!info) return null;
     if (info.harness && (!expectedHarness || info.harness === expectedHarness)) {
       return {
@@ -346,7 +383,11 @@ export function findHarnessAncestor(expectedHarness = null, startPid = process.p
         terminalKind: info.terminalKind,
         terminalTarget: info.terminalTarget,
         terminalInstance: info.terminalInstance,
+        hostTerminalKind: info.hostTerminalKind,
+        hostTerminalTarget: info.hostTerminalTarget,
+        hostTerminalInstance: info.hostTerminalInstance,
         startedAt: approximateStartTime(info.startTicks),
+        nested: isNestedHarnessProcess(info, read),
       };
     }
     pid = info.parentPid;
@@ -362,6 +403,7 @@ export class LinuxProcessDiscovery {
     logger = console,
     scan = scanHarnessProcesses,
     now = Date.now,
+    onProcessDiscovered = null,
   }) {
     this.store = store;
     this.intervalMs = intervalMs;
@@ -369,12 +411,24 @@ export class LinuxProcessDiscovery {
     this.logger = logger;
     this.scan = scan;
     this.now = now;
+    this.onProcessDiscovered = onProcessDiscovered;
     this.known = new Map();
     this.activity = new Map();
     this.instanceId = randomUUID();
     this.eventSequence = 0;
     this.initialized = false;
     this.timer = null;
+  }
+
+  notifyProcessDiscovered(item, occurredAt) {
+    if (typeof this.onProcessDiscovered !== "function") return;
+    try {
+      Promise.resolve(this.onProcessDiscovered(item, occurredAt)).catch((error) => {
+        this.logger.error?.(`[discovery] post-discovery action failed: ${error.message}`);
+      });
+    } catch (error) {
+      this.logger.error?.(`[discovery] post-discovery action failed: ${error.message}`);
+    }
   }
 
   eventId(key, transition) {
@@ -590,8 +644,16 @@ export class LinuxProcessDiscovery {
 
       if (!this.initialized) {
         const currentSessionIds = new Set([...current.values()].map((item) => item.nativeSessionId));
-        for (const session of this.store.listLiveProcessSessions()) {
-          if (currentSessionIds.has(session.nativeSessionId)) continue;
+        const currentPids = new Set(
+          [...current.values()].map((item) => `${item.harness}:${item.pid}`),
+        );
+        for (const session of this.store.listLivePidSessions()) {
+          const processOnly =
+            session.telemetry === "process" && session.nativeSessionId.startsWith("process-");
+          const stillRunning = processOnly
+            ? currentSessionIds.has(session.nativeSessionId)
+            : currentPids.has(`${session.harness}:${session.pid}`);
+          if (stillRunning) continue;
           this.markGone(session, `${session.harness}:${session.pid || session.nativeSessionId}:reconcile`);
         }
         this.initialized = true;
@@ -620,6 +682,7 @@ export class LinuxProcessDiscovery {
             startedAt: item.startedAt,
           },
         });
+        this.notifyProcessDiscovered(item, occurredAt);
       }
 
       for (const [key, item] of current) {

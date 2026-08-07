@@ -23,6 +23,10 @@ const INTERFACE_XML = `
       <arg type="b" direction="out" name="ok"/>
       <arg type="s" direction="out" name="message"/>
     </method>
+    <method name="RaiseSwitchboard">
+      <arg type="b" direction="out" name="ok"/>
+      <arg type="s" direction="out" name="message"/>
+    </method>
   </interface>
 </node>`;
 
@@ -98,7 +102,7 @@ class SwitchboardBridge {
     if (!terminal || terminal.service !== service) {
       return [
         false,
-        "Focus the target GNOME Terminal tab first, then choose Link focused terminal again.",
+        "Focus the target GNOME Terminal tab first, then choose Repair terminal jump again.",
       ];
     }
 
@@ -112,7 +116,7 @@ class SwitchboardBridge {
     this._targets.set(this._key(service, screen), target);
     this._lastTerminals.set(service, target);
     this._saveTargets();
-    return [true, "Linked this session to the focused GNOME Terminal tab."];
+    return [true, "Connected this session to the focused GNOME Terminal tab."];
   }
 
   FocusTerminal(service, screen) {
@@ -124,7 +128,7 @@ class SwitchboardBridge {
     if (!target) {
       return [
         false,
-        "This tab is not linked yet. Focus it once, then use Link focused terminal in Switchboard.",
+        "Automatic linking was missed. Focus this tab once, then use Repair terminal jump in Switchboard.",
       ];
     }
     if (!this._screenExists(service, screen)) {
@@ -167,6 +171,19 @@ class SwitchboardBridge {
     return [true, "Focused the linked GNOME Terminal tab."];
   }
 
+  RaiseSwitchboard() {
+    const window = this._findSwitchboardWindow();
+    if (!window) return [false, "The Agent Switchboard window is not running."];
+
+    this._keepSwitchboardAbove(window);
+    GLib.timeout_add(GLib.PRIORITY_DEFAULT, 180, () => {
+      const current = this._findSwitchboardWindow();
+      if (current) this._keepSwitchboardAbove(current);
+      return GLib.SOURCE_REMOVE;
+    });
+    return [true, "Kept Agent Switchboard above other windows."];
+  }
+
   _key(service, screen) {
     return `${service}\u0000${screen}`;
   }
@@ -205,6 +222,29 @@ class SwitchboardBridge {
       }
     }
     return null;
+  }
+
+  _findSwitchboardWindow() {
+    for (const actor of global.get_window_actors()) {
+      const window = actor.meta_window;
+      if (window.get_title?.() === "Agent Switchboard") return window;
+    }
+    return null;
+  }
+
+  _keepSwitchboardAbove(window) {
+    try {
+      window.unminimize();
+    } catch {
+      // The window may already be restored.
+    }
+    try {
+      window.stick();
+      window.make_above();
+      window.raise();
+    } catch (error) {
+      logError(error, "Agent Switchboard could not be raised");
+    }
   }
 
   _screenExists(service, screen) {

@@ -81,7 +81,7 @@ test("a native event merges a process-discovered provisional session by PID", ()
   }
 });
 
-test("closed ordinary sessions obey the recent window and dismissal", () => {
+test("all closed sessions obey the recent window and dismissal", () => {
   const store = new SwitchboardStore(":memory:");
   try {
     const occurredAt = Date.now() - 48 * 60 * 60 * 1000;
@@ -90,9 +90,28 @@ test("closed ordinary sessions obey the recent window and dismissal", () => {
     assert.equal(store.listSessions({ recentHours: 24 }).length, 0);
 
     store.markUnread(started.session.id);
-    assert.equal(store.listSessions({ recentHours: 24 }).length, 1);
+    assert.equal(store.listSessions({ recentHours: 24 }).length, 0);
     store.dismiss(started.session.id);
     assert.equal(store.listSessions({ recentHours: 24 }).length, 0);
+  } finally {
+    store.close();
+  }
+});
+
+test("a newly closed unread session appears only as recent and does not affect active counts", () => {
+  const store = new SwitchboardStore(":memory:");
+  try {
+    const started = store.ingest(input("recent-start", EVENT_KINDS.SESSION_STARTED));
+    store.markUnread(started.session.id);
+    store.ingest(input("recent-end", EVENT_KINDS.SESSION_ENDED));
+
+    const snapshot = store.getSnapshot({ recentHours: 24 });
+    assert.equal(snapshot.sessions.length, 1);
+    assert.equal(snapshot.sessions[0].presence, "closed");
+    assert.equal(snapshot.sessions[0].primaryState, "recent");
+    assert.equal(snapshot.sessions[0].group, "recent");
+    assert.equal(snapshot.counts.unread, 0);
+    assert.equal(snapshot.counts.open, 0);
   } finally {
     store.close();
   }

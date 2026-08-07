@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   captureGnomeTerminal,
   parseGnomeBridgeReply,
+  raiseGnomeSwitchboard,
   validGnomeTerminalScreen,
   validGnomeTerminalService,
 } from "../src/gnome-bridge.js";
@@ -47,5 +48,36 @@ test("explicit GNOME linking may use the last focused terminal without shell int
     ":1.142",
     "/org/gnome/Terminal/screen/abc_123",
     "true",
+  ]);
+});
+
+test("the GNOME bridge raises Switchboard without activating or focusing it", async () => {
+  const calls = [];
+  const result = await raiseGnomeSwitchboard({
+    which: (name) => (name === "gdbus" ? "/usr/bin/gdbus" : null),
+    run: async (file, args) => {
+      calls.push([file, args]);
+      return { stdout: "(true, 'Kept Agent Switchboard above other windows.')\n", stderr: "" };
+    },
+  });
+
+  assert.deepEqual(result, {
+    ok: true,
+    message: "Kept Agent Switchboard above other windows.",
+  });
+  assert.deepEqual(calls, [
+    [
+      "/usr/bin/gdbus",
+      [
+        "call",
+        "--session",
+        "--dest",
+        "com.skylabs.AgentSwitchboard.GnomeBridge",
+        "--object-path",
+        "/com/skylabs/AgentSwitchboard/GnomeBridge",
+        "--method",
+        "com.skylabs.AgentSwitchboard.GnomeBridge1.RaiseSwitchboard",
+      ],
+    ],
   ]);
 });

@@ -7,6 +7,7 @@ contextBridge.exposeInMainWorld(
     togglePinned: () => ipcRenderer.invoke("desktop:toggle-pinned"),
     minimize: () => ipcRenderer.invoke("desktop:minimize"),
     hide: () => ipcRenderer.invoke("desktop:hide"),
+    expand: () => ipcRenderer.invoke("desktop:expand"),
     focusSession: (sessionId) => ipcRenderer.invoke("desktop:focus-session", sessionId),
     linkSession: (sessionId) => ipcRenderer.invoke("desktop:link-session", sessionId),
     onStateChanged: (callback) => {

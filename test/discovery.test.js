@@ -5,7 +5,10 @@ import { EVENT_KINDS } from "../src/domain.js";
 import {
   activityHintFromTerminalTitle,
   detectHarnessProcess,
+  gnomeTerminalLocatorFrom,
+  hasNestedHarnessMarker,
   isInteractiveHarnessProcess,
+  isNestedHarnessProcess,
   LinuxProcessDiscovery,
   processActivitySample,
   readOpenCodeActivityHint,
@@ -29,6 +32,8 @@ test("terminal discovery captures safe structured focus targets", () => {
     environment: new Map([
       ["TMUX", "/tmp/tmux-1000/default,123,0"],
       ["TMUX_PANE", "%12"],
+      ["GNOME_TERMINAL_SCREEN", "/org/gnome/Terminal/screen/host_123"],
+      ["GNOME_TERMINAL_SERVICE", ":1.55"],
     ]),
     tty: "/dev/pts/8",
   });
@@ -38,6 +43,21 @@ test("terminal discovery captures safe structured focus targets", () => {
     target: "%12",
     instance: "/tmp/tmux-1000/default",
   });
+  assert.deepEqual(
+    gnomeTerminalLocatorFrom({
+      environment: new Map([
+        ["GNOME_TERMINAL_SCREEN", "/org/gnome/Terminal/screen/host_123"],
+        ["GNOME_TERMINAL_SERVICE", ":1.55"],
+      ]),
+      tty: "/dev/pts/8",
+    }),
+    {
+      label: "GNOME Terminal · pts/8",
+      kind: "gnome-terminal",
+      target: "/org/gnome/Terminal/screen/host_123",
+      instance: ":1.55",
+    },
+  );
 
   const wezterm = terminalLocatorFrom({
     environment: new Map([
@@ -179,6 +199,53 @@ test("fallback discovery keeps only foreground terminal harnesses", () => {
   assert.equal(isInteractiveHarnessProcess({ ...foreground, tty: "socket:[123]" }), false);
 });
 
+test("nested harnesses are recognized through ancestry and inherited markers", () => {
+  const parent = {
+    pid: 100,
+    parentPid: 1,
+    harness: "opencode",
+    environment: new Map(),
+    terminalKind: null,
+  };
+  const shell = {
+    pid: 101,
+    parentPid: 100,
+    harness: null,
+    environment: new Map(),
+  };
+  const child = {
+    pid: 102,
+    parentPid: 101,
+    harness: "opencode",
+    environment: new Map(),
+    terminalKind: null,
+  };
+  const processes = new Map([
+    [100, parent],
+    [101, shell],
+  ]);
+
+  assert.equal(isNestedHarnessProcess(parent, (pid) => processes.get(pid)), false);
+  assert.equal(isNestedHarnessProcess(child, (pid) => processes.get(pid)), true);
+  assert.equal(
+    isNestedHarnessProcess({
+      ...parent,
+      environment: new Map([["AGENT_SWITCHBOARD_CHILD", "1"]]),
+    }),
+    true,
+  );
+
+  assert.equal(
+    hasNestedHarnessMarker({
+      ...parent,
+      environment: new Map([["AGENT_SWITCHBOARD_CHILD", "1"]]),
+      terminalKind: "tmux",
+      terminalTarget: "%8",
+    }),
+    true,
+  );
+});
+
 test("process activity samples distinguish active, quiet, and unavailable counters", () => {
   const previous = { cpuTicks: 100, ioChars: 10_000 };
   assert.equal(processActivitySample(previous, { cpuTicks: 125, ioChars: 11_000 }, 2500), "active");
@@ -233,6 +300,42 @@ test("counter-only process discovery idles without fabricating an unread result"
     assert.equal(store.getSessionDetail(id).session.primaryState, "idle");
     assert.equal(store.getSessionDetail(id).session.unread, false);
     assert.equal(store.getSessionDetail(id).events.length, 3);
+  } finally {
+    store.close();
+  }
+});
+
+test("process discovery runs post-discovery actions only once per new process", () => {
+  const store = new SwitchboardStore(":memory:");
+  try {
+    const clock = Date.now();
+    const discovered = [];
+    const current = {
+      processKey: "codex:31:310",
+      harness: "codex",
+      nativeSessionId: "process-31-310",
+      pid: 31,
+      title: "Current Codex",
+      cwd: "/work/current",
+      project: "current",
+      terminal: "GNOME Terminal · pts/7",
+      terminalKind: "gnome-terminal",
+      terminalTarget: "/org/gnome/Terminal/screen/abc_123",
+      terminalInstance: ":1.42",
+      startedAt: clock - 1_000,
+    };
+    const discovery = new LinuxProcessDiscovery({
+      store,
+      scan: () => [current],
+      now: () => clock,
+      onProcessDiscovered: (item, occurredAt) => discovered.push([item.processKey, occurredAt]),
+      logger: { error() {} },
+    });
+
+    discovery.tick();
+    discovery.tick();
+
+    assert.deepEqual(discovered, [[current.processKey, clock]]);
   } finally {
     store.close();
   }
@@ -367,6 +470,20 @@ test("process discovery reconciles stale rows and can reopen a resumed process",
       telemetry: "process",
       metadata: { pid: 10, title: "Stale Codex" },
     });
+    const staleNative = store.ingest({
+      eventId: "stale-native-attention",
+      harness: "opencode",
+      nativeSessionId: "native-stale-11",
+      kind: EVENT_KINDS.ATTENTION_REQUESTED,
+      nativeType: "permission.asked",
+      telemetry: "native",
+      metadata: { pid: 11, title: "Stale native OpenCode" },
+      attention: {
+        kind: "approval",
+        requestId: "permission-stale",
+        summary: "OpenCode is waiting for approval",
+      },
+    });
 
     const current = {
       processKey: "opencode:20:200",
@@ -387,6 +504,8 @@ test("process discovery reconciles stale rows and can reopen a resumed process",
 
     discovery.tick();
     assert.equal(store.getSession(store.resolveSessionForPid("codex", 10)).presence, "closed");
+    assert.equal(store.getSession(staleNative.session.id).presence, "closed");
+    assert.equal(store.getSession(staleNative.session.id).attention, "none");
     const currentId = store.resolveSessionForPid("opencode", 20);
     assert.equal(store.getSession(currentId).presence, "live");
 

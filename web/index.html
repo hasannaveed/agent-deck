@@ -17,8 +17,8 @@
         <span class="desktop-window-title">Session desk</span>
         <div class="desktop-window-controls">
           <button id="desktop-pin" type="button" title="Toggle always on top" aria-label="Toggle always on top">⌖</button>
-          <button id="desktop-minimize" type="button" title="Minimize" aria-label="Minimize">−</button>
-          <button id="desktop-hide" type="button" title="Hide to tray" aria-label="Hide to tray">×</button>
+          <button id="desktop-minimize" type="button" title="Collapse to status dock" aria-label="Collapse to status dock">−</button>
+          <button id="desktop-hide" type="button" title="Collapse to status dock" aria-label="Collapse to status dock">×</button>
         </div>
       </div>
 
@@ -113,6 +113,16 @@
         </aside>
       </main>
     </div>
+
+    <button class="collapsed-dock" id="desktop-dock" type="button" aria-label="Expand Switchboard">
+      <span class="dock-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+      <span class="dock-copy">
+        <strong>Switchboard</strong>
+        <span><b id="dock-live-count">0</b> live</span>
+      </span>
+      <span class="dock-status" id="dock-status" aria-hidden="true"></span>
+      <span class="dock-expand" aria-hidden="true">⌃</span>
+    </button>
 
     <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
     <script type="module" src="/app.js"></script>

@@ -90,6 +90,46 @@ test("OpenCode plugin events map busy, idle, permission, and error states", () =
   assert.equal(error[0].error.kind, "ProviderError");
 });
 
+test("OpenCode permission and question variants require attention until resolved", () => {
+  for (const type of ["permission.asked", "permission.v2.asked"]) {
+    const events = translateOpenCodeEvent({
+      id: `event-${type}`,
+      type,
+      properties: { sessionID: "open-2", id: "approval-2" },
+    });
+    assert.equal(events[0].kind, "attention_requested");
+    assert.equal(events[0].attention.kind, "approval");
+    assert.equal(events[0].attention.requestId, "approval-2");
+  }
+
+  for (const type of ["question.asked", "question.v2.asked"]) {
+    const events = translateOpenCodeEvent({
+      id: `event-${type}`,
+      type,
+      properties: { sessionID: "open-2", id: "question-2" },
+    });
+    assert.equal(events[0].kind, "attention_requested");
+    assert.equal(events[0].attention.kind, "question");
+    assert.equal(events[0].attention.requestId, "question-2");
+  }
+
+  for (const type of [
+    "permission.replied",
+    "permission.v2.replied",
+    "question.replied",
+    "question.rejected",
+    "question.v2.replied",
+    "question.v2.rejected",
+  ]) {
+    const events = translateOpenCodeEvent({
+      id: `event-${type}`,
+      type,
+      properties: { sessionID: "open-2", requestID: "request-2" },
+    });
+    assert.equal(events[0].kind, "attention_resolved");
+  }
+});
+
 test("adapter events without a stable session id are ignored", () => {
   assert.deepEqual(translateCodexEvent({ method: "turn/started", params: {} }), []);
   assert.deepEqual(translateClaudeEvent({ hook_event_name: "Stop" }), []);

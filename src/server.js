@@ -10,6 +10,10 @@ const ASSETS = new Map([
   ["/", { type: "text/html; charset=utf-8", body: readFileSync(new URL("../web/index.html", import.meta.url)) }],
   ["/index.html", { type: "text/html; charset=utf-8", body: readFileSync(new URL("../web/index.html", import.meta.url)) }],
   ["/app.js", { type: "text/javascript; charset=utf-8", body: readFileSync(new URL("../web/app.js", import.meta.url)) }],
+  [
+    "/session-navigation.js",
+    { type: "text/javascript; charset=utf-8", body: readFileSync(new URL("../web/session-navigation.js", import.meta.url)) },
+  ],
   ["/styles.css", { type: "text/css; charset=utf-8", body: readFileSync(new URL("../web/styles.css", import.meta.url)) }],
   ["/favicon.svg", { type: "image/svg+xml", body: readFileSync(new URL("../web/favicon.svg", import.meta.url)) }],
   [
@@ -41,7 +45,7 @@ function sendAsset(response, asset) {
   response.writeHead(200, {
     ...SECURITY_HEADERS,
     "Content-Type": asset.type,
-    "Cache-Control": "no-cache",
+    "Cache-Control": "no-store",
   });
   response.end(asset.body);
 }

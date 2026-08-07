@@ -14,10 +14,11 @@
     "switchboardd": "./src/bin/switchboardd.js"
   },
   "scripts": {
-    "start": "electron .",
-    "gui": "electron .",
+    "start": "node scripts/run-desktop.js",
+    "gui": "node scripts/run-desktop.js",
     "desktop:install": "node scripts/install-desktop.js",
     "gnome:install": "node scripts/install-gnome-extension.js",
+    "opencode:install": "node scripts/install-opencode-plugin.js",
     "daemon": "node src/bin/switchboardd.js",
     "tui": "node src/bin/switchboard.js",
     "doctor": "node src/bin/switchboardctl.js doctor",

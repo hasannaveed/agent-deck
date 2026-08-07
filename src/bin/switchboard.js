@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { spawn } from "node:child_process";
 import { SwitchboardClient } from "../client.js";
 import { focusSession } from "../focus.js";
 
@@ -109,12 +110,10 @@ function stateDescription(session) {
 
 function filterSessions(snapshot, filter) {
   if (filter === "active") {
-    return snapshot.sessions.filter(
-      (session) => session.presence === "live" || ["error", "needs_attention", "unread"].includes(session.primaryState),
-    );
+    return snapshot.sessions.filter((session) => session.presence === "live");
   }
   if (filter === "needs_attention" || filter === "unread") {
-    return snapshot.sessions.filter((session) => session.primaryState === filter);
+    return snapshot.sessions.filter((session) => session.presence === "live" && session.primaryState === filter);
   }
   return snapshot.sessions.filter((session) => session.group === filter);
 }
@@ -237,6 +236,8 @@ class TerminalApp {
     this.message = "Connecting…";
     this.online = false;
     this.refreshing = false;
+    this.focusInFlight = false;
+    this.suspended = false;
     this.pollTimer = null;
     this.exitCode = 0;
     this.handleInput = this.handleInput.bind(this);
@@ -297,10 +298,27 @@ class TerminalApp {
   }
 
   async focusSelected() {
-    if (!this.selectedId) return;
+    if (!this.selectedId || this.focusInFlight) return;
+    const selected = this.sessions().find((session) => session.id === this.selectedId);
+    if (selected && !selected.focusable) {
+      await this.inspectSelected();
+      this.message = selected.presence === "closed" ? "Session closed · details only" : "Jump unavailable · details only";
+      this.render();
+      return;
+    }
+    this.focusInFlight = true;
+    this.message = "Opening session…";
+    this.render();
     try {
       const detail = await this.client.session(this.selectedId);
-      const result = await focusSession(detail.session, { reuseCurrentTmux: true });
+      const result = await focusSession(detail.session, {
+        reuseCurrentTmux: true,
+        focusAttachedTmux: true,
+        attachCurrentTmux:
+          !process.env.TMUX && detail.session.terminalKind === "tmux"
+            ? (file, args) => this.attachTmuxInPlace(file, args)
+            : null,
+      });
       this.message = result.message;
       if (result.ok) {
         if (detail.session.unread) await this.client.action(this.selectedId, "seen");
@@ -312,8 +330,46 @@ class TerminalApp {
       }
     } catch (error) {
       this.message = error.message;
+    } finally {
+      this.focusInFlight = false;
     }
     this.render();
+  }
+
+  pauseTerminalUi() {
+    this.suspended = true;
+    if (this.pollTimer) clearInterval(this.pollTimer);
+    this.pollTimer = null;
+    process.stdin.off("data", this.handleInput);
+    process.stdout.off("resize", this.render);
+    if (process.stdin.isTTY) process.stdin.setRawMode(false);
+    process.stdout.write(`${ESC}?25h${ESC}?1049l`);
+  }
+
+  resumeTerminalUi() {
+    process.stdout.write(`${ESC}?1049h${ESC}?25l`);
+    if (process.stdin.isTTY) process.stdin.setRawMode(true);
+    process.stdin.resume();
+    process.stdin.on("data", this.handleInput);
+    process.stdout.on("resize", this.render);
+    this.suspended = false;
+    this.startPolling();
+  }
+
+  async attachTmuxInPlace(file, args) {
+    this.pauseTerminalUi();
+    try {
+      await new Promise((resolve, reject) => {
+        const child = spawn(file, args, { stdio: "inherit" });
+        child.once("error", reject);
+        child.once("exit", (code, signal) => {
+          if (code === 0) resolve();
+          else reject(new Error(`tmux attach exited with ${signal || `status ${code}`}`));
+        });
+      });
+    } finally {
+      this.resumeTerminalUi();
+    }
   }
 
   async toggleUnread() {
@@ -446,6 +502,7 @@ class TerminalApp {
   }
 
   render() {
+    if (this.suspended) return;
     const columns = Math.max(30, process.stdout.columns || 100);
     const rows = Math.max(12, process.stdout.rows || 30);
     const counts = this.snapshot.counts || {};
@@ -476,6 +533,11 @@ class TerminalApp {
     process.on("SIGINT", () => this.stop());
     process.on("SIGTERM", () => this.stop());
     await this.refresh();
+    this.startPolling();
+  }
+
+  startPolling() {
+    if (this.pollTimer) return;
     this.pollTimer = setInterval(() => void this.refresh(), 1200);
     this.pollTimer.unref?.();
   }

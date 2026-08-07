@@ -8,7 +8,7 @@ into an inbox.
 It includes:
 
 - a native Electron desktop pane with always-on-top, tray, and hide/show controls;
-- click-to-jump routing for tmux, WezTerm, kitty, Zellij, and linked GNOME Terminal sessions;
+- click-to-jump routing for tmux, WezTerm, kitty, Zellij, and GNOME Terminal sessions;
 - an interactive terminal UI with a prominent harness column;
 - a local SQLite event store and Server-Sent Events stream;
 - native adapters for Codex, Claude Code, and OpenCode;
@@ -28,9 +28,9 @@ npm start
 
 The window stays above normal windows by default, can hide to the system tray,
 and remembers its size, position, and pin state. `Ctrl+Shift+Space` toggles it.
-On Linux, pinned mode is a non-focusable utility overlay so it remains above
-other applications and across workspaces. Mouse actions still work; unpin it to
-move the pane or type into search. The desktop process starts the local daemon
+On Linux, pinned mode remains keyboard-focusable while staying above other
+applications and across workspaces. Use `↑`/`↓` (or `j`/`k`) to select a visible
+session and `Enter` to jump to it. The desktop process starts the local daemon
 when one is not already running.
 
 Open the TUI against that same daemon in another terminal:
@@ -56,6 +56,16 @@ GNOME Terminal windows and tabs:
 npm run gnome:install
 ```
 
+Install exact permission/question detection for OpenCode:
+
+```bash
+npm run opencode:install
+```
+
+Restart OpenCode sessions that were already running when the plugin was
+installed. Future OpenCode permission and question prompts then appear as
+`NEEDS YOU`; ordinary pending or running tools remain `WORKING`.
+
 The generated launcher points to this checkout, so keep the project at the same
 path. For a headless daemon plus TUI, use `npm run daemon` and `npm run tui`.
 
@@ -77,6 +87,11 @@ Queued or pending tools count as working. `NEEDS YOU` is reserved for an explici
 human-input signal such as a permission request, question, authentication step,
 or Codex's `Action Required` status.
 
+OpenCode instances launched from an agent tool shell are treated as nested work
+and folded into their top-level parent instead of becoming additional rows. The
+integration forwards this ownership marker through detached tmux sessions
+without inspecting shell commands.
+
 A reliable harness transition from `WORKING` to finished becomes `UNREAD` until
 you successfully jump to that session or mark it seen. Counter-only process
 sampling remains conservative: a process that merely goes quiet becomes `IDLE`,
@@ -95,6 +110,7 @@ npm start                           open the native desktop pane
 npm run daemon                      run only the local daemon
 npm run tui                         open the interactive terminal UI
 npm run gnome:install               install the GNOME Terminal focus connector
+npm run opencode:install             install exact OpenCode prompt events
 switchboardd [--no-discovery]       run the local daemon
 switchboard                         open the TUI (daemon must be running)
 switchboard --once                  print active sessions with harness labels
@@ -103,7 +119,7 @@ switchboardctl doctor               inspect runtime, daemon, and harness setup
 switchboardctl list [--json]        print active and recent sessions
 switchboardctl demo                 load all representative states
 switchboardctl demo --clear         remove only demo-generated sessions
-switchboardctl link                 link the focused GNOME Terminal tab
+switchboardctl link                 repair a missed GNOME Terminal route
 switchboardctl seen <id>            acknowledge completed work
 switchboardctl unread <id>          put a session back in the unread queue
 switchboardctl dismiss <id>         hide a closed session
@@ -113,7 +129,14 @@ switchboardctl integrations         locate native integration templates
 In the desktop pane, click a row or press `Enter` to jump to it; press `I` or use
 the row's colored state label to inspect signals without acknowledging the session.
 Successful jumps leave the Switchboard pane visible and mark unread work as seen.
-The pin button controls always-on-top; hiding the pane remains an explicit action.
+The pane opens at the bottom right. Minimize, hide, and the window close control
+collapse it into a compact status dock there; click the dock to restore the full
+pane. The collapsed dock stays in front even when the regular pin is turned off,
+while the pin button controls whether the expanded pane also stays always-on-top.
+On Linux the small desktop pane uses XWayland by default because Electron's native
+Wayland backend does not support programmatic z-order changes. Set
+`SWITCHBOARD_NATIVE_WAYLAND=1` only if you prefer native Wayland over guaranteed
+always-on-top behavior.
 
 TUI keys are `↑`/`↓` or `j`/`k` to move, `Enter` to jump to the selected terminal
 pane, `i` to inspect without acknowledging, `m` to toggle read state, `d` to
@@ -130,27 +153,46 @@ states.
 
 Switchboard records a structured terminal target alongside each live session:
 
-- tmux: selects the exact pane in an already attached terminal; it opens one
-  graphical terminal only when the tmux session is detached;
+- tmux: selects the exact pane, focuses an existing attached client's terminal,
+  and attaches through the current TUI terminal only as a fallback;
 - WezTerm: activates the exact pane through `wezterm cli` and preserves its GUI
   socket when available;
 - kitty: focuses the exact window when kitty was started with remote control and
   a `KITTY_LISTEN_ON` Unix socket;
 - Zellij: opens a graphical terminal attached to the matching Zellij session.
 - GNOME Terminal: uses its inherited screen ID plus a small GNOME Shell
-  extension to activate the linked Wayland window and select its tab.
+  extension to activate its Wayland window and select its tab.
 
 GNOME Terminal deliberately does not expose a public “activate this existing
-screen” method. After installing the connector, focus an agent's terminal tab
-and choose **Link focused terminal** in its Switchboard details. The pinned pane
-does not steal keyboard focus, so this records the terminal underneath it. You
-can also run `switchboardctl link` in a terminal before starting an agent. A
-link is stored by GNOME screen ID and normally lasts for that tab's lifetime;
-relink after moving the tab to another window or reordering its tabs.
+screen” method. After installing the connector, Switchboard automatically
+records a newly launched agent's focused window and tab. Native `SessionStart`
+and user-prompt hooks provide additional safe capture points without inspecting
+prompt content. Background completion and tool events are deliberately excluded
+so they cannot associate the wrong tab.
+
+Ordinarily no linking action is required. If an agent was already running before
+the connector or daemon started, or if its tab was moved or reordered, try to
+open it once. Switchboard then reveals **Repair terminal jump** in the session
+details. Focus the target terminal tab and choose that action, or run
+`switchboardctl link` inside the tab. The route is stored by GNOME screen ID and
+normally lasts for that tab's lifetime.
 
 The TUI uses these same validated targets when you press `Enter`. If the TUI and
 agent are on the same tmux server, it switches the existing client directly to
-that pane; otherwise it activates or opens the recorded terminal target.
+that pane. Otherwise, Switchboard inspects the target session's attached tmux
+clients, selects the most recently active one, and focuses its existing GNOME
+Terminal window and tab through the Shell connector. This creates no terminal,
+tmux client, session, or agent process.
+
+If an attached tmux client's GNOME route was missed, the desktop pane asks the
+connector to recover it from its remembered terminal and retries activation. If
+activation still fails, the jump reports that failure instead of claiming
+success after changing only the hidden tmux pane.
+
+If no attached terminal can be safely focused, the TUI temporarily leaves the
+Switchboard screen and attaches that same terminal to the target tmux session.
+Detach with tmux's normal `Ctrl-b d` binding to return to the TUI. The desktop
+pane opens one graphical terminal only when the session is detached.
 
 Other plain terminal processes do not expose a portable focus identifier. When
 a safe jump route is unavailable, clicking opens the signal detail and explains
@@ -168,9 +210,12 @@ The display priority is deliberately stable:
 5. open/idle;
 6. recently closed.
 
-All live and unresolved sessions remain visible. Ordinary closed sessions are
-kept for 24 hours, with at most 20 recent rows. Override those defaults with
-`SWITCHBOARD_RECENT_HOURS` and `SWITCHBOARD_MAX_RECENT`.
+The default Active queue contains live processes only. Once discovery confirms
+that a process exited, it leaves Active on the next scan (2.5 seconds by default),
+even if its last result was unread or errored. Closed sessions remain available
+only in the explicit Recent view for 24 hours, with at most 20 recent rows, and
+cannot be jumped to. Override those defaults with `SWITCHBOARD_RECENT_HOURS`,
+`SWITCHBOARD_MAX_RECENT`, and `SWITCHBOARD_DISCOVERY_INTERVAL_MS`.
 
 Linux process discovery is intentionally limited to foreground harnesses with a
 controlling terminal. Suspended jobs and headless editor services are excluded,

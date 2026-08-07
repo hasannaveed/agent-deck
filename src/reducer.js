@@ -97,7 +97,10 @@ export function reduceSession(previous, event) {
       session.presence = "live";
       session.activity = "working";
       session.endedAt = null;
-      clearAttention(session);
+      // A native harness can repeat its generic busy status while an explicit
+      // permission or question is still open. Only process inference or a new
+      // human turn may use WORK_STARTED itself as evidence that input resumed.
+      if (event.telemetry === "process" || event.humanInitiated) clearAttention(session);
       clearError(session);
       if (event.humanInitiated) {
         session.seenSeq = session.completionSeq;
@@ -176,6 +179,7 @@ export function reduceSession(previous, event) {
 }
 
 export function derivePrimaryState(session) {
+  if (session.presence === "closed") return "recent";
   if (session.errorKind) return "error";
   if (session.attention === "required") return "needs_attention";
   if (session.activity === "working") return "working";
@@ -221,7 +225,6 @@ export function decorateSession(session) {
 
 export function shouldIncludeSession(session, now, recentHours) {
   if (session.presence === "live") return true;
-  if (session.errorKind || session.attention === "required" || session.unread) return !session.dismissed;
   if (session.dismissed) return false;
   return session.updatedAt >= now - recentHours * 60 * 60 * 1000;
 }

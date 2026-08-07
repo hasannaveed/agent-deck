@@ -48,6 +48,17 @@ function cleanMessage(value) {
   return String(value || "").replaceAll(/\s+/g, " ").trim().slice(0, 240);
 }
 
+function bridgeReplyMessage(method, message) {
+  const cleaned = cleanMessage(message);
+  if (
+    method === "FocusTerminal" &&
+    /(?:not linked yet|automatic linking was missed)/i.test(cleaned)
+  ) {
+    return "Automatic terminal linking was missed. Focus the target tab, then use Repair terminal jump or run switchboardctl link there.";
+  }
+  return cleaned;
+}
+
 export function parseGnomeBridgeReply(value) {
   const output = String(value || "").trim();
   const success = output.match(/^\(\s*(true|false)\s*,/);
@@ -114,12 +125,13 @@ async function invokeBridge(
         message: "The GNOME connector returned an invalid response.",
       };
     }
+    const message = bridgeReplyMessage(method, reply.message);
     return reply.ok
-      ? { ok: true, message: reply.message }
+      ? { ok: true, message }
       : {
           ok: false,
           code: method === "CaptureTerminal" ? "gnome_terminal_link_failed" : "gnome_terminal_unlinked",
-          message: reply.message || "This GNOME Terminal screen has not been linked yet.",
+          message: message || "This GNOME Terminal screen does not have an automatic jump route yet.",
         };
   } catch (error) {
     return { ok: false, code: "gnome_bridge_unavailable", message: bridgeUnavailableMessage(error) };
@@ -140,4 +152,36 @@ export async function focusGnomeTerminal(terminal, options = {}) {
 
 export function captureGnomeTerminal(terminal, options = {}) {
   return invokeBridge("CaptureTerminal", terminal, options);
+}
+
+export async function raiseGnomeSwitchboard({
+  env = process.env,
+  which = (name) => executableOnPath(name, env),
+  run = defaultRun,
+} = {}) {
+  const gdbus = which("gdbus");
+  if (!gdbus) {
+    return { ok: false, code: "gnome_bridge_unavailable", message: "gdbus is required to raise Switchboard." };
+  }
+
+  try {
+    const result = await run(gdbus, [
+      "call",
+      "--session",
+      "--dest",
+      GNOME_BRIDGE_NAME,
+      "--object-path",
+      GNOME_BRIDGE_PATH,
+      "--method",
+      `${GNOME_BRIDGE_INTERFACE}.RaiseSwitchboard`,
+    ]);
+    const reply = parseGnomeBridgeReply(result.stdout);
+    return reply || {
+      ok: false,
+      code: "gnome_bridge_invalid_reply",
+      message: "The GNOME connector returned an invalid response.",
+    };
+  } catch (error) {
+    return { ok: false, code: "gnome_bridge_unavailable", message: bridgeUnavailableMessage(error) };
+  }
 }
