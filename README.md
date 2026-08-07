@@ -16,63 +16,176 @@ It includes:
 - Linux process discovery with low-confidence working/idle inference when hooks
   are not yet installed.
 
-## Quick start
+## Install on a new machine
 
-Switchboard requires Node.js 22.5 or newer because it uses Node's built-in
-SQLite module. From a checkout, the normal install is:
+The current supported target is Linux. The daemon and TUI can run without a
+graphical desktop. The native desktop pane needs a graphical session, and exact
+jumping to ordinary GNOME Terminal windows or tabs requires GNOME Shell 42–44.
+
+### 1. Install the prerequisites
+
+You need:
+
+- Git;
+- Node.js 22.5 or newer and its bundled `npm` command;
+- a supported coding harness—Codex, Claude Code, or OpenCode—already installed;
+- a graphical Linux desktop if you want the native desktop pane;
+- `gnome-shell` and `gnome-extensions` if you want the bundled GNOME Terminal
+  connector on GNOME 42–44.
+
+tmux, WezTerm, kitty, and Zellij are optional. Install only the terminal tools
+you actually use. Switchboard installs integrations for the harnesses but does
+not install the harness applications themselves.
+
+Confirm the required runtime before continuing:
+
+```bash
+node --version
+npm --version
+```
+
+If Node.js is missing or older than 22.5, install a current release through your
+normal package manager or Node version manager first.
+
+### 2. Clone the repository or your fork
+
+To use the main repository:
+
+```bash
+git clone https://github.com/hasannaveed/agent-deck.git
+cd agent-deck
+```
+
+If you created a GitHub fork, clone your fork instead:
+
+```bash
+git clone https://github.com/YOUR-ACCOUNT/agent-deck.git
+cd agent-deck
+```
+
+Choose the checkout location before setup and keep it there. Installed hooks,
+the desktop launcher, and the OpenCode plugin contain absolute paths back to
+this checkout. If you later move it, rerun `npm run setup` from the new location.
+
+### 3. Install dependencies and preview setup
 
 ```bash
 npm ci
-npm run setup
+npm run setup -- --dry-run
 ```
 
-`setup` safely merges the Codex and Claude Code lifecycle hooks, installs the
-OpenCode event plugin, creates the application-menu launcher, installs the GNOME
-Terminal connector when the supported GNOME desktop is detected, verifies the
-result, and opens the desktop pane. Commands embedded in the integrations use
-absolute paths to this checkout, so keep the project at the same location after
-setup.
+The dry run is optional but useful on a new machine: it lists every file and
+integration setup intends to manage without changing or launching anything.
 
-To start the pane automatically when the user logs in, use:
+### 4. Install the integrations and desktop launcher
+
+For the normal installation, including desktop autostart after login, run:
 
 ```bash
 npm run setup -- --autostart
 ```
 
-To inspect every intended destination without writing or launching anything:
+Omit `--autostart` if you prefer to start the desktop pane manually:
 
 ```bash
-npm run setup -- --dry-run
+npm run setup
 ```
 
-Setup changes only the current user's files; it does not use `sudo`, install a
-system service, or edit shell startup files. Existing Codex and Claude settings
-are preserved and their hook arrays are appended to rather than replaced. Before
-the first edit, setup saves a copy under
+Run setup from a terminal inside the logged-in graphical session when using
+GNOME. This gives the installer access to the correct desktop session and lets
+it detect, install, and enable the GNOME Terminal connector. Running setup over
+SSH or from a headless shell still installs the harness integrations, but it may
+skip the GNOME connector and cannot open the desktop pane. You can run
+`npm run gnome:install` later from the GNOME desktop session.
+
+`setup` safely merges the Codex and Claude Code lifecycle hooks, installs the
+OpenCode event plugin, creates the application-menu launcher, installs the GNOME
+Terminal connector when a supported GNOME desktop is detected, runs the doctor,
+and opens the desktop pane. It changes only the current user's files; it does
+not use `sudo`, install a system service, or edit shell startup files.
+
+Existing Codex and Claude settings are preserved and their hook arrays are
+appended to rather than replaced. Before the first edit, setup saves a copy under
 `~/.local/state/agent-switchboard/install-backups`. It refuses malformed JSON,
 symbolic-link configs, and unrelated files occupying a Switchboard destination
 instead of overwriting them.
 
-Codex requires newly discovered user hooks to be reviewed by the user. Start or
-restart Codex, open `/hooks`, and trust the Switchboard entries once. Restart any
-Claude Code or OpenCode sessions that were already open during setup. This trust
-step is intentionally not bypassed by the installer.
+### 5. Complete the one-time harness and GNOME steps
 
-The window stays above normal windows by default, can hide to the system tray,
-and remembers its size, position, and pin state. `Ctrl+Shift+Space` toggles it.
-On Linux, pinned mode remains keyboard-focusable while staying above other
-applications and across workspaces. Use `↑`/`↓` (or `j`/`k`) to select a visible
-session and `Enter` to jump to it. The desktop process starts the local daemon
-when one is not already running.
+After setup:
 
-Open the TUI against that same daemon in another terminal:
+1. Restart any Codex, Claude Code, or OpenCode sessions that were already open.
+2. Start Codex, open `/hooks`, review the new user hooks, and trust the
+   Switchboard entries once. The installer intentionally cannot bypass this
+   user confirmation.
+3. On GNOME, follow the setup output. If it says the connector is pending, log
+   out of the desktop session and back in once. The installer schedules the
+   extension to be enabled after that login.
+4. Verify the completed installation:
+
+   ```bash
+   npm run doctor
+   ```
+
+If GNOME still reports that the connector is not running after logging back in,
+run these from the graphical session:
+
+```bash
+npm run gnome:install
+gnome-extensions enable agent-switchboard@skylabs-ai.com
+npm run doctor
+```
+
+The GNOME connector enables exact switching to ordinary GNOME Terminal windows
+and tabs. OpenCode permission and question prompts appear as `NEEDS YOU`;
+ordinary pending or running tools remain `WORKING`.
+
+### 6. Start the desktop pane, TUI, or both
+
+The setup command normally opens the desktop pane immediately. Later, launch it
+from the application menu or from this checkout:
+
+```bash
+npm run gui
+```
+
+The desktop process starts the local daemon when one is not already running. To
+use the TUI alongside it, open another terminal and run:
 
 ```bash
 npm run tui
 ```
 
+To run only the daemon and TUI without the desktop pane, use two terminals:
+
+```bash
+# Terminal 1
+npm run daemon
+
+# Terminal 2
+npm run tui
+```
+
+Do not start a second standalone daemon when the desktop pane already owns one;
+both clients should reuse the same daemon at `127.0.0.1:43117`.
+
+Start a supported coding-agent session after setup. It should appear after its
+native start event or within the next Linux discovery scan, normally 2.5 seconds.
+For a full code and configuration check, run:
+
+```bash
+npm run check
+```
+
+The window stays above normal windows by default, can hide to the system tray,
+and remembers its size, position, and pin state. `Ctrl+Shift+Space` toggles it.
+On Linux, pinned mode remains keyboard-focusable while staying above other
+applications and across workspaces. Use `↑`/`↓` (or `j`/`k`) to select a visible
+session and `Enter` to jump to it.
+
 To preview every state, run `node src/bin/switchboardctl.js demo`. The demo is
-optional; live Linux process discovery starts automatically.
+optional and is never loaded by normal startup; live Linux process discovery
+starts automatically.
 
 The individual component installers remain available for development or a
 manual repair:
@@ -83,12 +196,6 @@ npm run desktop:install -- --autostart
 npm run gnome:install
 npm run opencode:install
 ```
-
-The GNOME connector supports GNOME 42–44 and enables exact switching to ordinary
-GNOME Terminal windows and tabs. Future OpenCode permission and question prompts
-appear as `NEEDS YOU`; ordinary pending or running tools remain `WORKING`.
-
-For a headless daemon plus TUI, use `npm run daemon` and `npm run tui`.
 
 For convenient commands during development, run `npm link` once and then use
 `switchboardd`, `switchboard`, and `switchboardctl` directly.
