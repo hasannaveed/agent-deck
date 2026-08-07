@@ -130,6 +130,44 @@ test("OpenCode permission and question variants require attention until resolved
   }
 });
 
+test("OpenCode external-directory permissions and option questions use their request ids", () => {
+  const permission = translateOpenCodeEvent({
+    id: "event-external-directory",
+    type: "permission.asked",
+    data: {
+      sessionID: "open-prompts",
+      permissionID: "permission-external-directory",
+      permission: "external_directory",
+      patterns: ["/home/example/.config/systemd/user/*"],
+    },
+  });
+  assert.equal(permission[0].kind, "attention_requested");
+  assert.equal(permission[0].attention.kind, "approval");
+  assert.equal(permission[0].attention.requestId, "permission-external-directory");
+
+  const question = translateOpenCodeEvent({
+    event: {
+      id: "event-preference",
+      type: "question.asked",
+      data: {
+        sessionID: "open-prompts",
+        id: "question-preference",
+        questions: [
+          {
+            header: "Preference",
+            question: "Which private option should be used?",
+            options: [{ label: "Private option", description: "Sensitive detail" }],
+          },
+        ],
+      },
+    },
+  });
+  assert.equal(question[0].kind, "attention_requested");
+  assert.equal(question[0].attention.kind, "question");
+  assert.equal(question[0].attention.requestId, "question-preference");
+  assert.equal(JSON.stringify(question).includes("Private option"), false);
+});
+
 test("adapter events without a stable session id are ignored", () => {
   assert.deepEqual(translateCodexEvent({ method: "turn/started", params: {} }), []);
   assert.deepEqual(translateClaudeEvent({ hook_event_name: "Stop" }), []);

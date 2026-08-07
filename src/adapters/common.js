@@ -101,6 +101,7 @@ export function requestIdentifier(raw) {
       raw?.tool_use_id ||
       payload?.requestId ||
       payload?.requestID ||
+      payload?.permissionID ||
       payload?.itemId ||
       payload?.id,
     256,

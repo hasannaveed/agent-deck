@@ -19,12 +19,44 @@ It includes:
 ## Quick start
 
 Switchboard requires Node.js 22.5 or newer because it uses Node's built-in
-SQLite module. Install dependencies and open the desktop pane:
+SQLite module. From a checkout, the normal install is:
 
 ```bash
-npm install
-npm start
+npm ci
+npm run setup
 ```
+
+`setup` safely merges the Codex and Claude Code lifecycle hooks, installs the
+OpenCode event plugin, creates the application-menu launcher, installs the GNOME
+Terminal connector when the supported GNOME desktop is detected, verifies the
+result, and opens the desktop pane. Commands embedded in the integrations use
+absolute paths to this checkout, so keep the project at the same location after
+setup.
+
+To start the pane automatically when the user logs in, use:
+
+```bash
+npm run setup -- --autostart
+```
+
+To inspect every intended destination without writing or launching anything:
+
+```bash
+npm run setup -- --dry-run
+```
+
+Setup changes only the current user's files; it does not use `sudo`, install a
+system service, or edit shell startup files. Existing Codex and Claude settings
+are preserved and their hook arrays are appended to rather than replaced. Before
+the first edit, setup saves a copy under
+`~/.local/state/agent-switchboard/install-backups`. It refuses malformed JSON,
+symbolic-link configs, and unrelated files occupying a Switchboard destination
+instead of overwriting them.
+
+Codex requires newly discovered user hooks to be reviewed by the user. Start or
+restart Codex, open `/hooks`, and trust the Switchboard entries once. Restart any
+Claude Code or OpenCode sessions that were already open during setup. This trust
+step is intentionally not bypassed by the installer.
 
 The window stays above normal windows by default, can hide to the system tray,
 and remembers its size, position, and pin state. `Ctrl+Shift+Space` toggles it.
@@ -42,32 +74,21 @@ npm run tui
 To preview every state, run `node src/bin/switchboardctl.js demo`. The demo is
 optional; live Linux process discovery starts automatically.
 
-Install an application-menu launcher (and optionally start the pane at login):
+The individual component installers remain available for development or a
+manual repair:
 
 ```bash
 npm run desktop:install
 npm run desktop:install -- --autostart
-```
-
-On GNOME 42–44, install the companion extension for exact switching to ordinary
-GNOME Terminal windows and tabs:
-
-```bash
 npm run gnome:install
-```
-
-Install exact permission/question detection for OpenCode:
-
-```bash
 npm run opencode:install
 ```
 
-Restart OpenCode sessions that were already running when the plugin was
-installed. Future OpenCode permission and question prompts then appear as
-`NEEDS YOU`; ordinary pending or running tools remain `WORKING`.
+The GNOME connector supports GNOME 42–44 and enables exact switching to ordinary
+GNOME Terminal windows and tabs. Future OpenCode permission and question prompts
+appear as `NEEDS YOU`; ordinary pending or running tools remain `WORKING`.
 
-The generated launcher points to this checkout, so keep the project at the same
-path. For a headless daemon plus TUI, use `npm run daemon` and `npm run tui`.
+For a headless daemon plus TUI, use `npm run daemon` and `npm run tui`.
 
 For convenient commands during development, run `npm link` once and then use
 `switchboardd`, `switchboard`, and `switchboardctl` directly.
@@ -106,6 +127,12 @@ not interfere with the harness.
 ## Commands
 
 ```text
+npm run setup                      safely install user integrations and launcher
+npm run setup -- --autostart       also start the desktop pane after login
+npm run setup -- --dry-run         preview setup without changing anything
+npm run uninstall                  remove only setup-owned integration entries
+npm run uninstall -- --dry-run     preview uninstall without changing anything
+npm run uninstall -- --purge       also remove runtime data after Switchboard stops
 npm start                           open the native desktop pane
 npm run daemon                      run only the local daemon
 npm run tui                         open the interactive terminal UI
@@ -125,6 +152,20 @@ switchboardctl unread <id>          put a session back in the unread queue
 switchboardctl dismiss <id>         hide a closed session
 switchboardctl integrations         locate native integration templates
 ```
+
+The normal uninstall is deliberately conservative:
+
+```bash
+npm run uninstall -- --dry-run
+npm run uninstall
+```
+
+It removes only the exact hook entries recorded by setup and only files carrying
+Switchboard's ownership marker. Existing settings, unrelated hooks and plugins,
+the checkout, dependencies, and runtime history are preserved. If an installed
+hook entry was edited after setup, uninstall reports and preserves it for manual
+review. After quitting the desktop pane and daemon, pass `--purge` to remove the
+runtime database, preferences, manifest, and setup backups too.
 
 In the desktop pane, click a row or press `Enter` to jump to it; press `I` or use
 the row's colored state label to inspect signals without acknowledging the session.

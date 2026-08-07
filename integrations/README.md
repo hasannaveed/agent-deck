@@ -10,6 +10,28 @@ so it cannot block the harness.
 
 ## Before merging a template
 
+The recommended path is the unified, ownership-aware installer:
+
+```bash
+npm ci
+npm run setup
+```
+
+It validates both JSON configurations before changing either one, appends only
+missing matcher groups, records the exact entries it owns, and makes a one-time
+backup of each existing file under
+`~/.local/state/agent-switchboard/install-backups`. Re-running it is safe. It
+will stop without touching malformed JSON, a symbolic-link configuration, or an
+unrelated desktop/plugin destination.
+
+Use `npm run setup -- --dry-run` to preview destinations. Use
+`npm run uninstall` to remove only exact entries created by setup; existing and
+subsequently edited entries are preserved. The manual steps below are useful
+when a config is intentionally managed through a symlink or another dotfile
+system.
+
+## Manual template installation
+
 1. Install this package so `switchboardctl` is on `PATH`, or replace the command
    in the template with an absolute command such as
    `node /absolute/path/src/bin/switchboardctl.js`.
@@ -22,7 +44,7 @@ so it cannot block the harness.
 Merge `codex/hooks.json` into `~/.codex/hooks.json`. Codex combines matcher
 groups, so preserve any groups already present. Codex may ask you to review and
 trust newly discovered hooks. Use `/hooks` to inspect them; see the official
-[Codex hooks reference](https://developers.openai.com/codex/config-advanced#hooks).
+[Codex hooks reference](https://learn.chatgpt.com/docs/hooks).
 
 ## Claude Code
 

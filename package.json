@@ -16,6 +16,8 @@
   "scripts": {
     "start": "node scripts/run-desktop.js",
     "gui": "node scripts/run-desktop.js",
+    "setup": "node scripts/setup.js",
+    "uninstall": "node scripts/uninstall.js",
     "desktop:install": "node scripts/install-desktop.js",
     "gnome:install": "node scripts/install-gnome-extension.js",
     "opencode:install": "node scripts/install-opencode-plugin.js",

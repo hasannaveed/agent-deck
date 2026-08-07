@@ -4,8 +4,9 @@ import { spawn } from "node:child_process";
 // The installer replaces these two declarations with absolute paths. Keeping
 // command-name defaults makes the template usable after `npm link` as well.
 const bridgeCommand = "switchboardctl";
-const bridgeArguments = ["emit", "--harness", "opencode"];
+const bridgeArguments = ["emit", "--harness", "opencode", "--stream"];
 const nestedHarnessEnvironment = "AGENT_SWITCHBOARD_CHILD";
+const maximumQueuedEvents = 256;
 
 const trackedEvents = new Set([
   "session.created",
@@ -36,6 +37,14 @@ const promptResolvedEvents = new Set([
   "question.v2.rejected"
 ]);
 
+const promptAskedEvents = new Set([
+  "permission.asked",
+  "permission.updated",
+  "permission.v2.asked",
+  "question.asked",
+  "question.v2.asked"
+]);
+
 function stringValue(value) {
   return typeof value === "string" && value ? value : undefined;
 }
@@ -45,7 +54,10 @@ function stringValue(value) {
 // included in the object sent to Switchboard.
 function lifecycleEvent(event) {
   if (!event || typeof event.type !== "string") return null;
-  const properties = event.properties || event.data || {};
+  const properties = {
+    ...(event.data && typeof event.data === "object" ? event.data : {}),
+    ...(event.properties && typeof event.properties === "object" ? event.properties : {})
+  };
   const info = properties.info || {};
   const safeInfo = {
     id: stringValue(info.id),
@@ -56,7 +68,10 @@ function lifecycleEvent(event) {
   const safeProperties = {
     sessionID: stringValue(properties.sessionID) || stringValue(info.id),
     id: stringValue(properties.id),
-    requestID: stringValue(properties.requestID),
+    requestID:
+      stringValue(properties.requestID) ||
+      stringValue(properties.requestId) ||
+      stringValue(properties.permissionID),
     status: stringValue(properties.status?.type) ? { type: properties.status.type } : undefined,
     error:
       stringValue(properties.error?.name) || stringValue(properties.error?.type)
@@ -74,31 +89,149 @@ function lifecycleEvent(event) {
   };
 }
 
-function forward(event) {
-  const safeEvent = lifecycleEvent(event);
-  if (!safeEvent) return;
-  try {
-    const child = spawn(bridgeCommand, bridgeArguments, {
-      detached: true,
-      stdio: ["pipe", "ignore", process.env.SWITCHBOARD_DEBUG ? "inherit" : "ignore"],
-      windowsHide: true
-    });
-    child.on("error", (error) => {
-      if (process.env.SWITCHBOARD_DEBUG) console.error(`[switchboard plugin] ${error.message}`);
-    });
-    child.on("exit", (code) => {
-      if (process.env.SWITCHBOARD_DEBUG && code) {
-        console.error(`[switchboard plugin] bridge exited with status ${code}`);
+function promptEvent(type) {
+  return type.startsWith("permission.") || type.startsWith("question.");
+}
+
+function noisyEventKey(event) {
+  if (!["session.updated", "session.status"].includes(event.type)) return null;
+  return `${event.type}:${event.properties?.sessionID || ""}`;
+}
+
+function createBridgeForwarder() {
+  let bridge = null;
+  let disposed = false;
+  let waitingForDrain = false;
+  let restartTimer = null;
+  const queue = [];
+  const replayable = [];
+
+  const debug = (message) => {
+    if (process.env.SWITCHBOARD_DEBUG) console.error(`[switchboard plugin] ${message}`);
+  };
+
+  const scheduleRestart = () => {
+    if (disposed || restartTimer || !queue.length) return;
+    restartTimer = setTimeout(() => {
+      restartTimer = null;
+      pump();
+    }, 100);
+    restartTimer.unref?.();
+  };
+
+  const bridgeClosed = (instance, error) => {
+    if (bridge !== instance) return;
+    bridge = null;
+    waitingForDrain = false;
+    if (error) debug(error.message || String(error));
+    if (!disposed && replayable.length) {
+      const queuedLines = new Set(queue.map((item) => item.line));
+      for (let index = replayable.length - 1; index >= 0; index -= 1) {
+        const item = replayable[index];
+        if (!queuedLines.has(item.line)) queue.unshift(item);
       }
-    });
-    child.stdin.on("error", (error) => {
-      if (process.env.SWITCHBOARD_DEBUG) console.error(`[switchboard plugin] ${error.message}`);
-    });
-    child.stdin.end(JSON.stringify(safeEvent));
-    child.unref();
-  } catch {
-    // Switchboard must never interfere with OpenCode.
+    }
+    scheduleRestart();
+  };
+
+  const ensureBridge = () => {
+    if (bridge || disposed) return bridge;
+    try {
+      const child = spawn(bridgeCommand, bridgeArguments, {
+        detached: false,
+        stdio: ["pipe", "ignore", process.env.SWITCHBOARD_DEBUG ? "inherit" : "ignore"],
+        windowsHide: true
+      });
+      bridge = child;
+      child.on("error", (error) => bridgeClosed(child, error));
+      child.on("exit", (code) => {
+        if (code && !disposed) debug(`bridge exited with status ${code}`);
+        bridgeClosed(child);
+      });
+      child.stdin.on("error", (error) => bridgeClosed(child, error));
+      child.unref();
+      return child;
+    } catch (error) {
+      debug(error.message || String(error));
+      scheduleRestart();
+      return null;
+    }
+  };
+
+  function pump() {
+    if (disposed || waitingForDrain || !queue.length) return;
+    const child = ensureBridge();
+    if (!child) return;
+    while (bridge === child && queue.length) {
+      const item = queue[0];
+      let accepted;
+      try {
+        accepted = child.stdin.write(`${item.line}\n`);
+      } catch (error) {
+        bridgeClosed(child, error);
+        return;
+      }
+      queue.shift();
+      if (item.critical) {
+        replayable.push(item);
+        if (replayable.length > 64) replayable.shift();
+      }
+      if (!accepted) {
+        waitingForDrain = true;
+        child.stdin.once("drain", () => {
+          if (bridge !== child) return;
+          waitingForDrain = false;
+          pump();
+        });
+        return;
+      }
+    }
   }
+
+  const forward = (event) => {
+    const safeEvent = lifecycleEvent(event);
+    if (!safeEvent || disposed) return;
+    const item = {
+      line: JSON.stringify(safeEvent),
+      critical: promptEvent(safeEvent.type)
+    };
+    const noisyKey = noisyEventKey(safeEvent);
+    if (noisyKey) {
+      const existing = queue.findIndex((candidate) => candidate.noisyKey === noisyKey);
+      if (existing >= 0) {
+        queue[existing] = { ...item, noisyKey };
+        pump();
+        return;
+      }
+      item.noisyKey = noisyKey;
+    }
+    if (queue.length >= maximumQueuedEvents) {
+      const replaceable = queue.findIndex((candidate) => !candidate.critical);
+      if (replaceable >= 0) queue.splice(replaceable, 1);
+      else queue.shift();
+    }
+    queue.push(item);
+    pump();
+  };
+
+  const dispose = () => {
+    disposed = true;
+    if (restartTimer) clearTimeout(restartTimer);
+    restartTimer = null;
+    queue.length = 0;
+    replayable.length = 0;
+    const child = bridge;
+    bridge = null;
+    if (!child) return;
+    try {
+      child.stdin.destroy();
+      child.kill();
+    } catch {
+      // OpenCode must remain usable if the bridge already exited.
+    }
+  };
+
+  return { forward, dispose };
 }
 
 // A tool can launch another OpenCode directly or through a detached tmux
@@ -143,57 +276,148 @@ function pendingRequests(response) {
   return [];
 }
 
-async function forwardPending(resultPromise, type) {
-  try {
-    const response = await resultPromise;
-    for (const request of pendingRequests(response)) {
-      if (!stringValue(request?.id) || !stringValue(request?.sessionID)) continue;
-      forward({
-        id: `switchboard-pending-${type}-${request.id}`,
-        type,
-        properties: { id: request.id, sessionID: request.sessionID }
-      });
-    }
-  } catch {
-    // Endpoint availability varies across OpenCode versions.
-  }
+function pendingRequest(request, kind) {
+  const id =
+    stringValue(request?.id) ||
+    stringValue(request?.requestID) ||
+    stringValue(request?.requestId) ||
+    stringValue(request?.permissionID);
+  const sessionID =
+    stringValue(request?.sessionID) ||
+    stringValue(request?.sessionId) ||
+    stringValue(request?.session?.id);
+  if (!id || !sessionID) return null;
+  return { id, sessionID, kind };
 }
 
-function recoverPendingPrompts(client, directory) {
-  const tasks = [];
-  try {
-    if (typeof client?.permission?.list === "function") {
-      tasks.push(forwardPending(client.permission.list({ directory }), "permission.asked"));
-    }
-    if (typeof client?.question?.list === "function") {
-      tasks.push(forwardPending(client.question.list({ directory }), "question.asked"));
-    }
-    if (typeof client?.v2?.permission?.request?.list === "function") {
-      tasks.push(
-        forwardPending(
-          client.v2.permission.request.list({ location: { directory } }),
-          "permission.v2.asked"
-        )
-      );
-    }
-    if (typeof client?.v2?.question?.request?.list === "function") {
-      tasks.push(
-        forwardPending(
-          client.v2.question.request.list({ location: { directory } }),
-          "question.v2.asked"
-        )
-      );
-    }
-  } catch {
-    return Promise.resolve();
+async function collectPendingPrompts(client, directory) {
+  const endpoints = new Map([
+    ["permission", []],
+    ["question", []]
+  ]);
+  const add = (kind, invoke) => {
+    endpoints.get(kind).push(invoke);
+  };
+
+  if (typeof client?.permission?.list === "function") {
+    add("permission", () => client.permission.list({ directory }));
   }
-  return Promise.allSettled(tasks);
+  if (typeof client?.question?.list === "function") {
+    add("question", () => client.question.list({ directory }));
+  }
+  if (typeof client?.v2?.permission?.request?.list === "function") {
+    add("permission", () => client.v2.permission.request.list({ location: { directory } }));
+  }
+  if (typeof client?.v2?.question?.request?.list === "function") {
+    add("question", () => client.v2.question.request.list({ location: { directory } }));
+  }
+
+  const results = await Promise.all(
+    [...endpoints].map(async ([kind, candidates]) => {
+      for (const invoke of candidates) {
+        try {
+          return { kind, response: await invoke() };
+        } catch {
+          // Try the API shape used by another supported OpenCode version.
+        }
+      }
+      return null;
+    })
+  );
+  const pending = new Map();
+  const successfulKinds = new Set();
+  for (const result of results) {
+    if (!result) continue;
+    successfulKinds.add(result.kind);
+    for (const value of pendingRequests(result.response)) {
+      const request = pendingRequest(value, result.kind);
+      if (!request) continue;
+      pending.set(`${request.kind}:${request.sessionID}:${request.id}`, request);
+    }
+  }
+  return successfulKinds.size ? { pending, successfulKinds } : null;
+}
+
+function samePendingPrompts(left, right) {
+  if (left.size !== right.size) return false;
+  for (const key of left.keys()) if (!right.has(key)) return false;
+  return true;
+}
+
+function createPromptReconciler(client, directory, forward) {
+  let known = new Map();
+  let generation = 0;
+  let running = null;
+  let rerun = false;
+  let disposed = false;
+
+  const reconcile = () => {
+    if (disposed) return Promise.resolve();
+    if (running) {
+      rerun = true;
+      return running;
+    }
+    running = (async () => {
+      const result = await collectPendingPrompts(client, directory);
+      if (disposed || result === null) return;
+      const current = new Map(
+        [...known].filter(([, request]) => !result.successfulKinds.has(request.kind))
+      );
+      for (const [key, request] of result.pending) current.set(key, request);
+      if (samePendingPrompts(known, current)) return;
+      generation += 1;
+      const previous = known;
+      known = current;
+
+      // Resolve disappeared requests first, then re-assert every request that
+      // remains. This preserves NEEDS YOU when one of several prompts closes.
+      for (const [key, request] of previous) {
+        if (current.has(key)) continue;
+        forward({
+          id: `switchboard-reconciled-resolved-${generation}-${key}`,
+          type: `${request.kind}.replied`,
+          properties: { requestID: request.id, sessionID: request.sessionID }
+        });
+      }
+      for (const [key, request] of current) {
+        forward({
+          id: `switchboard-reconciled-asked-${generation}-${key}`,
+          type: `${request.kind}.asked`,
+          properties: { id: request.id, sessionID: request.sessionID }
+        });
+      }
+    })().finally(() => {
+      running = null;
+      if (rerun && !disposed) {
+        rerun = false;
+        queueMicrotask(reconcile);
+      }
+    });
+    return running;
+  };
+
+  const dispose = () => {
+    disposed = true;
+    known.clear();
+  };
+
+  return { reconcile, dispose };
 }
 
 export const AgentSwitchboard = async ({ client, directory }) => {
   ensureTmuxForwardsNestedMarker();
   const nestedHarness = process.env[nestedHarnessEnvironment] === "1";
-  if (!nestedHarness) void recoverPendingPrompts(client, directory);
+  const bridge = nestedHarness ? null : createBridgeForwarder();
+  const prompts = nestedHarness
+    ? null
+    : createPromptReconciler(client, directory, bridge.forward);
+  let promptPoll = null;
+  if (prompts) {
+    void prompts.reconcile();
+    promptPoll = setInterval(() => void prompts.reconcile(), 1000);
+    promptPoll.unref?.();
+  }
+
   return {
     "shell.env": async (_input, output) => {
       output.env[nestedHarnessEnvironment] = "1";
@@ -201,10 +425,16 @@ export const AgentSwitchboard = async ({ client, directory }) => {
     event: async ({ event }) => {
       if (nestedHarness) return;
       if (!trackedEvents.has(event.type)) return;
-      forward(event);
-      if (promptResolvedEvents.has(event.type)) {
-        void recoverPendingPrompts(client, directory);
+      bridge.forward(event);
+      if (promptAskedEvents.has(event.type) || promptResolvedEvents.has(event.type)) {
+        void prompts.reconcile();
       }
+    },
+    dispose: async () => {
+      if (promptPoll) clearInterval(promptPoll);
+      promptPoll = null;
+      prompts?.dispose();
+      bridge?.dispose();
     }
   };
 };

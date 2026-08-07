@@ -7,6 +7,8 @@ export const APP_NAME = "Agent Switchboard";
 export const APP_VERSION = "0.1.0";
 export const DEFAULT_HOST = "127.0.0.1";
 export const DEFAULT_PORT = 43117;
+export const STATE_OWNERSHIP_MARKER = ".agent-switchboard-owned";
+export const STATE_OWNERSHIP_CONTENT = "Agent Switchboard user state\n";
 
 export function resolveSwitchboardHome(env = process.env) {
   if (env.SWITCHBOARD_HOME) return path.resolve(env.SWITCHBOARD_HOME);
@@ -37,6 +39,7 @@ export function getRuntimeConfig(env = process.env) {
     baseUrl: `http://${host}:${port}`,
     dbPath: path.join(home, "switchboard.sqlite"),
     tokenPath: path.join(home, "ingest-token"),
+    ownershipPath: path.join(home, STATE_OWNERSHIP_MARKER),
     recentHours: Math.max(1, Number.parseInt(env.SWITCHBOARD_RECENT_HOURS || "24", 10) || 24),
     maxRecent: Math.max(1, Number.parseInt(env.SWITCHBOARD_MAX_RECENT || "20", 10) || 20),
     discoveryIntervalMs,
@@ -53,6 +56,19 @@ export function ensureRuntimeHome(config) {
     chmodSync(config.home, 0o700);
   } catch {
     // Some filesystems do not expose POSIX permissions.
+  }
+
+  if (!existsSync(config.ownershipPath)) {
+    writeFileSync(config.ownershipPath, STATE_OWNERSHIP_CONTENT, {
+      encoding: "utf8",
+      mode: 0o600,
+      flag: "wx",
+    });
+  }
+  try {
+    chmodSync(config.ownershipPath, 0o600);
+  } catch {
+    // Best effort on non-POSIX filesystems.
   }
 
   if (!existsSync(config.tokenPath)) {

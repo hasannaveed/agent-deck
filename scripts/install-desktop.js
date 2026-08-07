@@ -1,6 +1,14 @@
 #!/usr/bin/env node
 
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -10,6 +18,7 @@ const ELECTRON = path.join(ROOT, "node_modules", ".bin", "electron");
 const RUNNER = path.join(ROOT, "scripts", "run-desktop.js");
 const ICON = path.join(ROOT, "web", "favicon.svg");
 const autostart = process.argv.includes("--autostart");
+const force = process.argv.includes("--force");
 
 function quoteExec(value) {
   return `"${String(value).replaceAll("\\", "\\\\").replaceAll('"', '\\"')}"`;
@@ -32,20 +41,43 @@ Categories=Development;
 StartupNotify=true
 StartupWMClass=agent-switchboard
 X-GNOME-Autostart-enabled=true
+X-Agent-Switchboard-Owned=true
 `;
+
+function ownedEntry(target) {
+  if (!existsSync(target)) return true;
+  const metadata = lstatSync(target);
+  if (metadata.isSymbolicLink() || !metadata.isFile()) return false;
+  const current = readFileSync(target, "utf8");
+  return (
+    current.includes("X-Agent-Switchboard-Owned=true") ||
+    (current.includes("Name=Agent Switchboard") && current.includes("StartupWMClass=agent-switchboard"))
+  );
+}
+
+function installEntry(target, label) {
+  if (!ownedEntry(target) && !force) {
+    throw new Error(`${target} already exists and is not owned by Agent Switchboard; it was left unchanged.`);
+  }
+  mkdirSync(path.dirname(target), { recursive: true, mode: 0o700 });
+  const temporary = path.join(path.dirname(target), `.${path.basename(target)}.${process.pid}.tmp`);
+  try {
+    writeFileSync(temporary, entry, { encoding: "utf8", mode: 0o644, flag: "wx" });
+    renameSync(temporary, target);
+  } finally {
+    if (existsSync(temporary)) unlinkSync(temporary);
+  }
+  process.stdout.write(`${label}: ${target}\n`);
+}
 
 const dataHome = process.env.XDG_DATA_HOME || path.join(homedir(), ".local", "share");
 const applicationDirectory = path.join(dataHome, "applications");
 const applicationPath = path.join(applicationDirectory, "agent-switchboard.desktop");
-mkdirSync(applicationDirectory, { recursive: true, mode: 0o700 });
-writeFileSync(applicationPath, entry, { mode: 0o644 });
-process.stdout.write(`Installed desktop launcher: ${applicationPath}\n`);
+installEntry(applicationPath, "Installed desktop launcher");
 
 if (autostart) {
   const configHome = process.env.XDG_CONFIG_HOME || path.join(homedir(), ".config");
   const autostartDirectory = path.join(configHome, "autostart");
   const autostartPath = path.join(autostartDirectory, "agent-switchboard.desktop");
-  mkdirSync(autostartDirectory, { recursive: true, mode: 0o700 });
-  writeFileSync(autostartPath, entry, { mode: 0o644 });
-  process.stdout.write(`Enabled login autostart: ${autostartPath}\n`);
+  installEntry(autostartPath, "Enabled login autostart");
 }
