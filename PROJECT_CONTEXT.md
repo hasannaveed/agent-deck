@@ -139,7 +139,7 @@ Duplicate prevention is required at several levels:
 - Background, suspended, headless editor, and helper processes must not become rows.
 - OpenCode tool shells carry `AGENT_SWITCHBOARD_CHILD=1`; nested OpenCode instances that inherit it are suppressed.
 
-When duplicate rows appear, fix identity or reconciliation centrally. Do not hide duplicates independently in the TUI and desktop renderer.
+When the daemon read model or both clients contain duplicate sessions, fix identity or reconciliation centrally. Do not hide those duplicates independently in the TUI and desktop renderer. A non-selectable ghost that appears only in the TUI is instead governed by the screen lifecycle invariant in `docs/ARCHITECTURE.md`.
 
 Closed rows should never remain in the Active list just because they still exist in SQLite. They belong only in Recent until retention or the row limit removes them. A stale target that fails a jump should also trigger or accelerate reconciliation rather than remaining indefinitely visible as live.
 
@@ -437,7 +437,7 @@ Use temporary state directories in tests and diagnostics. Do not contaminate the
 ## Known constraints and troubleshooting anchors
 
 - **Daemon already running:** usually another daemon or the Electron-owned runtime already holds `127.0.0.1:43117`. Reuse it or stop the correct owner; do not start duplicate daemons.
-- **TUI shows too many rows:** inspect foreground-process filtering, native/provisional identity merging, child markers, and store collapse logic.
+- **TUI shows too many rows:** distinguish a selectable daemon-backed session from a non-selectable screen ghost; follow the identity guidance above or the TUI screen lifecycle invariant in `docs/ARCHITECTURE.md`.
 - **Working never changes:** confirm native events first, then process sampling and idle timeout. Do not solve it by treating every live process as Working forever.
 - **Needs you is missing:** inspect the harness's explicit permission/question events and delivery/reconciliation path. Do not parse terminal text.
 - **Needs you appears during tools:** inspect event classification; pending/running tools must remain Working.
