@@ -3,6 +3,11 @@
 import { spawn } from "node:child_process";
 import { SwitchboardClient } from "../client.js";
 import { focusSession } from "../focus.js";
+import {
+  ENTER_TUI_SCREEN,
+  LEAVE_TUI_SCREEN,
+  renderTuiFrame,
+} from "../tui-screen.js";
 
 const ESC = "\u001b[";
 const RESET = `${ESC}0m`;
@@ -343,11 +348,11 @@ class TerminalApp {
     process.stdin.off("data", this.handleInput);
     process.stdout.off("resize", this.render);
     if (process.stdin.isTTY) process.stdin.setRawMode(false);
-    process.stdout.write(`${ESC}?25h${ESC}?1049l`);
+    process.stdout.write(LEAVE_TUI_SCREEN);
   }
 
   resumeTerminalUi() {
-    process.stdout.write(`${ESC}?1049h${ESC}?25l`);
+    process.stdout.write(ENTER_TUI_SCREEN);
     if (process.stdin.isTTY) process.stdin.setRawMode(true);
     process.stdin.resume();
     process.stdin.on("data", this.handleInput);
@@ -521,11 +526,11 @@ class TerminalApp {
       ? `Enter jump · Esc back · m read state · d dismiss · q quit${this.message === "Live" ? "" : `  —  ${this.message}`}`
       : `j/k move · Enter jump · i inspect · 1–6 view · q quit${this.message === "Live" ? "" : `  —  ${this.message}`}`;
     output.push(ansi("2;48;2;18;19;20", fit(` ${help}`, columns)));
-    process.stdout.write(`${ESC}H${output.slice(0, rows).join("\n")}${ESC}J`);
+    process.stdout.write(renderTuiFrame(output, rows));
   }
 
   async start() {
-    process.stdout.write(`${ESC}?1049h${ESC}?25l`);
+    process.stdout.write(ENTER_TUI_SCREEN);
     process.stdin.setRawMode(true);
     process.stdin.resume();
     process.stdin.on("data", this.handleInput);
@@ -547,7 +552,7 @@ class TerminalApp {
     process.stdin.off("data", this.handleInput);
     process.stdout.off("resize", this.render);
     if (process.stdin.isTTY) process.stdin.setRawMode(false);
-    process.stdout.write(`${ESC}?25h${ESC}?1049l`);
+    process.stdout.write(LEAVE_TUI_SCREEN);
     process.exit(this.exitCode);
   }
 }

@@ -394,7 +394,7 @@ function createWindow() {
     frame: false,
     focusable: true,
     alwaysOnTop: windowShouldStayOnTop(),
-    backgroundColor: "#090a12",
+    backgroundColor: "#070707",
     title: "Agent Switchboard",
     icon: path.join(ROOT, "web", "favicon.svg"),
     webPreferences: {
