@@ -3,6 +3,11 @@
 import { spawn } from "node:child_process";
 import { SwitchboardClient } from "../client.js";
 import { focusSession } from "../focus.js";
+import {
+  ENTER_TUI_SCREEN,
+  LEAVE_TUI_SCREEN,
+  renderTuiFrame,
+} from "../tui-screen.js";
 
 const ESC = "\u001b[";
 const RESET = `${ESC}0m`;
@@ -238,10 +243,18 @@ class TerminalApp {
     this.refreshing = false;
     this.focusInFlight = false;
     this.suspended = false;
+    this.screenOwned = false;
     this.pollTimer = null;
     this.exitCode = 0;
     this.handleInput = this.handleInput.bind(this);
     this.render = this.render.bind(this);
+    this.handleSigint = () => this.stop();
+    this.handleSigterm = () => this.stop();
+    this.handleProcessExit = () => {
+      try {
+        this.releaseTerminalUi();
+      } catch {}
+    };
   }
 
   sessions() {
@@ -336,23 +349,63 @@ class TerminalApp {
     this.render();
   }
 
-  pauseTerminalUi() {
+  acquireTerminalUi() {
+    if (this.screenOwned) return;
+    this.screenOwned = true;
+    try {
+      process.once("exit", this.handleProcessExit);
+      process.stdout.write(ENTER_TUI_SCREEN);
+      process.stdin.setRawMode(true);
+      process.stdin.resume();
+      process.stdin.on("data", this.handleInput);
+      process.stdout.on("resize", this.render);
+      process.on("SIGINT", this.handleSigint);
+      process.on("SIGTERM", this.handleSigterm);
+      this.suspended = false;
+    } catch (error) {
+      try {
+        this.releaseTerminalUi();
+      } catch {}
+      throw error;
+    }
+  }
+
+  releaseTerminalUi() {
+    if (!this.screenOwned) return;
+    this.screenOwned = false;
+    process.off("exit", this.handleProcessExit);
     this.suspended = true;
     if (this.pollTimer) clearInterval(this.pollTimer);
     this.pollTimer = null;
     process.stdin.off("data", this.handleInput);
     process.stdout.off("resize", this.render);
-    if (process.stdin.isTTY) process.stdin.setRawMode(false);
-    process.stdout.write(`${ESC}?25h${ESC}?1049l`);
+    process.off("SIGINT", this.handleSigint);
+    process.off("SIGTERM", this.handleSigterm);
+    const cleanupErrors = [];
+    try {
+      process.stdin.pause();
+    } catch (error) {
+      cleanupErrors.push(error);
+    }
+    try {
+      if (process.stdin.isTTY) process.stdin.setRawMode(false);
+    } catch (error) {
+      cleanupErrors.push(error);
+    }
+    try {
+      process.stdout.write(LEAVE_TUI_SCREEN);
+    } catch (error) {
+      cleanupErrors.push(error);
+    }
+    if (cleanupErrors.length) throw cleanupErrors[0];
+  }
+
+  pauseTerminalUi() {
+    this.releaseTerminalUi();
   }
 
   resumeTerminalUi() {
-    process.stdout.write(`${ESC}?1049h${ESC}?25l`);
-    if (process.stdin.isTTY) process.stdin.setRawMode(true);
-    process.stdin.resume();
-    process.stdin.on("data", this.handleInput);
-    process.stdout.on("resize", this.render);
-    this.suspended = false;
+    this.acquireTerminalUi();
     this.startPolling();
   }
 
@@ -521,19 +574,20 @@ class TerminalApp {
       ? `Enter jump · Esc back · m read state · d dismiss · q quit${this.message === "Live" ? "" : `  —  ${this.message}`}`
       : `j/k move · Enter jump · i inspect · 1–6 view · q quit${this.message === "Live" ? "" : `  —  ${this.message}`}`;
     output.push(ansi("2;48;2;18;19;20", fit(` ${help}`, columns)));
-    process.stdout.write(`${ESC}H${output.slice(0, rows).join("\n")}${ESC}J`);
+    process.stdout.write(renderTuiFrame(output, rows));
   }
 
   async start() {
-    process.stdout.write(`${ESC}?1049h${ESC}?25l`);
-    process.stdin.setRawMode(true);
-    process.stdin.resume();
-    process.stdin.on("data", this.handleInput);
-    process.stdout.on("resize", this.render);
-    process.on("SIGINT", () => this.stop());
-    process.on("SIGTERM", () => this.stop());
-    await this.refresh();
-    this.startPolling();
+    try {
+      this.acquireTerminalUi();
+      await this.refresh();
+      this.startPolling();
+    } catch (error) {
+      try {
+        this.releaseTerminalUi();
+      } catch {}
+      throw error;
+    }
   }
 
   startPolling() {
@@ -543,12 +597,11 @@ class TerminalApp {
   }
 
   stop() {
-    if (this.pollTimer) clearInterval(this.pollTimer);
-    process.stdin.off("data", this.handleInput);
-    process.stdout.off("resize", this.render);
-    if (process.stdin.isTTY) process.stdin.setRawMode(false);
-    process.stdout.write(`${ESC}?25h${ESC}?1049l`);
-    process.exit(this.exitCode);
+    try {
+      this.releaseTerminalUi();
+    } finally {
+      process.exit(this.exitCode);
+    }
   }
 }
 

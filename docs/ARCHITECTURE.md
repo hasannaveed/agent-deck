@@ -135,10 +135,15 @@ and asks the appropriate focus provider to raise the existing client window.
 For GNOME this is the client PID's inherited terminal service and screen path,
 never its title or terminal content. A missed GNOME association is recovered
 through the connector's remembered terminal and activation is retried; pane
-selection alone is not a successful desktop jump. If no exact attached route is available,
-the TUI suspends its raw screen and attaches the current terminal interactively;
-detaching restores the TUI and polling loop. A jump lock prevents overlapping
-attachment attempts.
+selection alone is not a successful desktop jump. If no exact attached route is
+available, the TUI releases raw input and every display mode it owns before
+attaching the current terminal interactively; detaching reacquires them and
+restarts the polling loop. While the TUI owns the screen, it disables terminal
+autowrap and erases every physical row on every frame so a shrinking list cannot
+leave a non-selectable ghost row. Quit paths, startup failures, and tmux handoffs
+restore cooked input, autowrap, cursor visibility, and the alternate screen.
+`test/tui-screen.test.js` covers frame erasure and screen-mode cleanup. A jump
+lock prevents overlapping attachment attempts.
 
 Focus providers are deliberately terminal-specific. tmux and Zellij open an
 attached graphical terminal when needed, but tmux first reuses any client already

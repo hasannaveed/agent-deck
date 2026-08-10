@@ -3,8 +3,8 @@
   "short_name": "Switchboard",
   "start_url": "/",
   "display": "standalone",
-  "background_color": "#101820",
-  "theme_color": "#101820",
+  "background_color": "#070707",
+  "theme_color": "#070707",
   "icons": [
     {
       "src": "/favicon.svg",
