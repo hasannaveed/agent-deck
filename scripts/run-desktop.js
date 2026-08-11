@@ -4,6 +4,7 @@ import { spawn } from "node:child_process";
 import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { ChromiumStderrFilter } from "../desktop/chromium-stderr.js";
 import { desktopLaunchArguments } from "../desktop/windowing.js";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -17,8 +18,10 @@ const args = desktopLaunchArguments({
 const child = spawn(electron, args, {
   cwd: ROOT,
   env: process.env,
-  stdio: "inherit",
+  stdio: ["inherit", "inherit", "pipe"],
 });
+
+child.stderr.pipe(new ChromiumStderrFilter()).pipe(process.stderr, { end: false });
 
 child.on("error", (error) => {
   process.stderr.write(`Could not start Agent Switchboard: ${error.message}\n`);

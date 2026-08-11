@@ -177,11 +177,12 @@ For a full code and configuration check, run:
 npm run check
 ```
 
-The window stays above normal windows by default, can hide to the system tray,
-and remembers its size, position, and pin state. `Ctrl+Shift+Space` toggles it.
-On Linux, pinned mode remains keyboard-focusable while staying above other
-applications and across workspaces. Use `↑`/`↓` (or `j`/`k`) to select a visible
-session and `Enter` to jump to it.
+The window stays above normal windows, can hide to the system tray, and
+remembers its normal expanded size. `Ctrl+Shift+Space` toggles it. Accidental
+maximize or fullscreen actions are returned to the remembered pane size instead
+of replacing it. On Linux, the pane remains keyboard-focusable while staying
+above other applications and across workspaces. Use `↑`/`↓` (or `j`/`k`) to
+select a visible session and `Enter` to jump to it.
 
 To preview every state, run `node src/bin/switchboardctl.js demo`. The demo is
 optional and is never loaded by normal startup; live Linux process discovery
@@ -279,8 +280,9 @@ the row's colored state label to inspect signals without acknowledging the sessi
 Successful jumps leave the Switchboard pane visible and mark unread work as seen.
 The pane opens at the bottom right. Minimize, hide, and the window close control
 collapse it into a compact status dock there; click the dock to restore the full
-pane. The collapsed dock stays in front even when the regular pin is turned off,
-while the pin button controls whether the expanded pane also stays always-on-top.
+pane. The collapsed and expanded panes both stay in front; there is no pin toggle
+to disable accidentally. Maximizing or entering fullscreen restores the last
+normal pane size instead of replacing it.
 On Linux the small desktop pane uses XWayland by default because Electron's native
 Wayland backend does not support programmatic z-order changes. Set
 `SWITCHBOARD_NATIVE_WAYLAND=1` only if you prefer native Wayland over guaranteed

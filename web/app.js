@@ -75,7 +75,6 @@ const elements = {
   toolsToggle: document.querySelector("#tools-toggle"),
   toast: document.querySelector("#toast"),
   desktopTitlebar: document.querySelector("#desktop-titlebar"),
-  desktopPin: document.querySelector("#desktop-pin"),
   desktopMinimize: document.querySelector("#desktop-minimize"),
   desktopHide: document.querySelector("#desktop-hide"),
   desktopDock: document.querySelector("#desktop-dock"),
@@ -687,11 +686,6 @@ function applyDesktopState(nextState) {
   document.documentElement.classList.toggle("hard-pinned", Boolean(nextState?.hardPinned));
   elements.search.disabled = false;
   elements.search.placeholder = "Search";
-  elements.desktopPin.classList.toggle("is-active", Boolean(nextState?.pinned));
-  elements.desktopPin.setAttribute("aria-pressed", String(Boolean(nextState?.pinned)));
-  elements.desktopPin.title = nextState?.pinned
-    ? "Stop keeping this pane on top"
-    : "Keep this pane on top";
   elements.desktopDock.setAttribute("aria-expanded", String(!nextState?.collapsed));
 }
 
@@ -701,7 +695,6 @@ async function initializeDesktopShell() {
   elements.desktopTitlebar.hidden = false;
   applyDesktopState(await desktop.getState());
   desktop.onStateChanged(applyDesktopState);
-  elements.desktopPin.addEventListener("click", async () => applyDesktopState(await desktop.togglePinned()));
   elements.desktopMinimize.addEventListener("click", async () => applyDesktopState(await desktop.minimize()));
   elements.desktopHide.addEventListener("click", async () => applyDesktopState(await desktop.hide()));
   elements.desktopDock.addEventListener("click", async () => applyDesktopState(await desktop.expand()));

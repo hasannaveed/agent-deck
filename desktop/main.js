@@ -28,6 +28,11 @@ import {
   expandedBoundsAtBottomRight,
 } from "./window-layout.js";
 import { keepPinnedWindowVisibleAfterJump } from "./window-presence.js";
+import {
+  defaultDesktopState,
+  normalizeDesktopState,
+  rememberableExpandedBounds,
+} from "./window-state.js";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const config = getRuntimeConfig();
@@ -39,42 +44,18 @@ let tray = null;
 let ownedRuntime = null;
 let client = null;
 let quitting = false;
-let recreatingWindow = false;
 let stoppingRuntime = false;
 let saveTimer = null;
-let recreateTimer = null;
 let visibilityRevision = 0;
 let changingWindowMode = false;
-let desktopState = {
-  layoutVersion: DESKTOP_LAYOUT_VERSION,
-  pinned: true,
-  collapsed: false,
-  expandedBounds: null,
-};
+let desktopState = defaultDesktopState();
 const focusOperations = new Map();
 
 function readDesktopState() {
   try {
-    const parsed = JSON.parse(readFileSync(statePath, "utf8"));
-    const validBounds = (value) =>
-      value && ["x", "y", "width", "height"].every((key) => Number.isInteger(value[key]));
-    return {
-      layoutVersion: Number.isInteger(parsed.layoutVersion) ? parsed.layoutVersion : 1,
-      pinned: parsed.pinned !== false,
-      collapsed: parsed.collapsed === true,
-      expandedBounds: validBounds(parsed.expandedBounds)
-        ? parsed.expandedBounds
-        : validBounds(parsed.bounds)
-          ? parsed.bounds
-          : null,
-    };
+    return normalizeDesktopState(JSON.parse(readFileSync(statePath, "utf8")));
   } catch {
-    return {
-      layoutVersion: DESKTOP_LAYOUT_VERSION,
-      pinned: true,
-      collapsed: false,
-      expandedBounds: null,
-    };
+    return defaultDesktopState();
   }
 }
 
@@ -101,7 +82,7 @@ function currentWindowState() {
 }
 
 function windowShouldStayOnTop() {
-  return desktopState.pinned || desktopState.collapsed;
+  return true;
 }
 
 function sendWindowState() {
@@ -149,9 +130,41 @@ function displayForWindow(window = mainWindow) {
 
 function rememberExpandedBounds(window = mainWindow) {
   if (!window || window.isDestroyed() || desktopState.collapsed || changingWindowMode) return;
-  const bounds = window.getBounds();
-  if (bounds.width < EXPANDED_MIN_WIDTH || bounds.height < EXPANDED_MIN_HEIGHT) return;
+  const bounds = rememberableExpandedBounds(window, {
+    minWidth: EXPANDED_MIN_WIDTH,
+    minHeight: EXPANDED_MIN_HEIGHT,
+  });
+  if (!bounds) return;
   desktopState.expandedBounds = bounds;
+}
+
+function restoreExpectedWindowMode(window = mainWindow) {
+  if (!window || window.isDestroyed() || changingWindowMode) return;
+  const workArea = displayForWindow(window).workArea;
+  const normalBounds = window.getNormalBounds?.() || desktopState.expandedBounds;
+  changingWindowMode = true;
+  if (window.isFullScreen?.()) window.setFullScreen(false);
+  if (window.isMaximized?.()) window.unmaximize();
+
+  if (desktopState.collapsed) {
+    window.setMinimumSize(COLLAPSED_WIDTH, COLLAPSED_HEIGHT);
+    window.setResizable(false);
+    window.setBounds(collapsedBoundsAtBottomRight(workArea));
+  } else {
+    window.setResizable(true);
+    window.setMinimumSize(EXPANDED_MIN_WIDTH, EXPANDED_MIN_HEIGHT);
+    const expandedBounds = expandedBoundsAtBottomRight(workArea, normalBounds);
+    desktopState.expandedBounds = expandedBounds;
+    window.setBounds(expandedBounds);
+  }
+
+  applyWindowPin(window);
+  revealWindow(window);
+  saveDesktopState();
+  sendWindowState();
+  setImmediate(() => {
+    changingWindowMode = false;
+  });
 }
 
 function setWindowCollapsed(value) {
@@ -169,6 +182,8 @@ function setWindowCollapsed(value) {
   desktopState.layoutVersion = DESKTOP_LAYOUT_VERSION;
   const workArea = displayForWindow(window).workArea;
   changingWindowMode = true;
+  if (window.isFullScreen?.()) window.setFullScreen(false);
+  if (window.isMaximized?.()) window.unmaximize();
   if (collapsed) {
     window.setMinimumSize(COLLAPSED_WIDTH, COLLAPSED_HEIGHT);
     window.setResizable(false);
@@ -191,46 +206,11 @@ function setWindowCollapsed(value) {
   return currentWindowState();
 }
 
-function scheduleWindowRecreation() {
-  clearTimeout(recreateTimer);
-  recreateTimer = setTimeout(() => {
-    const window = mainWindow;
-    if (!window || window.isDestroyed() || quitting) return;
-    rememberExpandedBounds(window);
-    saveDesktopState();
-    recreatingWindow = true;
-    mainWindow = null;
-    window.destroy();
-    recreatingWindow = false;
-    createWindow();
-    rebuildTrayMenu();
-  }, 100);
-}
-
-function setPinned(value) {
-  const pinned = Boolean(value);
-  const changed = pinned !== desktopState.pinned;
-  desktopState.pinned = pinned;
-  applyWindowPin(mainWindow);
-  saveDesktopState();
-  rebuildTrayMenu();
-  sendWindowState();
-  if (changed && process.platform === "linux") scheduleWindowRecreation();
-  return currentWindowState();
-}
-
 function rebuildTrayMenu() {
   if (!tray) return;
   tray.setContextMenu(
     Menu.buildFromTemplate([
       { label: desktopState.collapsed ? "Expand Switchboard" : "Collapse Switchboard", click: toggleWindow },
-      { type: "separator" },
-      {
-        label: "Always on top",
-        type: "checkbox",
-        checked: desktopState.pinned,
-        click: (item) => setPinned(item.checked),
-      },
       { type: "separator" },
       {
         label: "Quit",
@@ -264,7 +244,7 @@ function focusSessionOnce(sessionId) {
   const operation = (async () => {
     const switchboardWindow = mainWindow;
     const restoreRevision = visibilityRevision;
-    const wasVisibleAndPinned = Boolean(switchboardWindow?.isVisible() && desktopState.pinned);
+    const wasVisible = Boolean(switchboardWindow?.isVisible());
     const detail = await client.session(sessionId);
     const result = await focusSession(detail.session, {
       reuseAttachedTmux: true,
@@ -278,18 +258,16 @@ function focusSessionOnce(sessionId) {
     keepPinnedWindowVisibleAfterJump({
       window: switchboardWindow,
       shouldRestore: () =>
-        wasVisibleAndPinned &&
+        wasVisible &&
         mainWindow === switchboardWindow &&
-        visibilityRevision === restoreRevision &&
-        desktopState.pinned,
+        visibilityRevision === restoreRevision,
       applyPin: applyWindowPin,
     });
     if (
       process.platform === "linux" &&
-      wasVisibleAndPinned &&
+      wasVisible &&
       mainWindow === switchboardWindow &&
-      visibilityRevision === restoreRevision &&
-      desktopState.pinned
+      visibilityRevision === restoreRevision
     ) {
       void raiseGnomeSwitchboard();
     }
@@ -332,10 +310,6 @@ function registerIpc() {
   ipcMain.handle("desktop:get-state", (event) => {
     if (!trustedSender(event)) throw new Error("Untrusted renderer");
     return currentWindowState();
-  });
-  ipcMain.handle("desktop:toggle-pinned", (event) => {
-    if (!trustedSender(event)) throw new Error("Untrusted renderer");
-    return setPinned(!desktopState.pinned);
   });
   ipcMain.handle("desktop:minimize", (event) => {
     if (!trustedSender(event)) throw new Error("Untrusted renderer");
@@ -394,6 +368,8 @@ function createWindow() {
     frame: false,
     focusable: true,
     alwaysOnTop: windowShouldStayOnTop(),
+    maximizable: false,
+    fullscreenable: false,
     backgroundColor: "#070707",
     title: "Agent Switchboard",
     icon: path.join(ROOT, "web", "favicon.svg"),
@@ -421,7 +397,7 @@ function createWindow() {
     if (new URL(target).origin !== trustedOrigin) event.preventDefault();
   });
   window.on("close", (event) => {
-    if (quitting || recreatingWindow) return;
+    if (quitting) return;
     event.preventDefault();
     setWindowCollapsed(true);
   });
@@ -437,6 +413,12 @@ function createWindow() {
     if (mainWindow !== window || window.isDestroyed()) return;
     rememberExpandedBounds(window);
     saveDesktopState();
+  });
+  window.on("maximize", () => {
+    setImmediate(() => restoreExpectedWindowMode(window));
+  });
+  window.on("enter-full-screen", () => {
+    setImmediate(() => restoreExpectedWindowMode(window));
   });
   window.on("blur", () => {
     if (mainWindow === window && windowShouldStayOnTop()) applyWindowPin(window);
@@ -486,7 +468,6 @@ if (!app.requestSingleInstanceLock()) {
   app.on("window-all-closed", () => {});
   app.on("before-quit", (event) => {
     quitting = true;
-    clearTimeout(recreateTimer);
     globalShortcut.unregisterAll();
     if (!ownedRuntime || stoppingRuntime) return;
     event.preventDefault();

@@ -148,11 +148,6 @@ a:focus-visible {
   color: var(--ink);
 }
 
-.desktop-window-controls button.is-active {
-  background: rgb(74 203 134 / 12%);
-  color: var(--working);
-}
-
 .collapsed-dock {
   --dock-state: var(--open);
   position: fixed;
