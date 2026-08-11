@@ -4,7 +4,6 @@ contextBridge.exposeInMainWorld(
   "switchboardDesktop",
   Object.freeze({
     getState: () => ipcRenderer.invoke("desktop:get-state"),
-    togglePinned: () => ipcRenderer.invoke("desktop:toggle-pinned"),
     minimize: () => ipcRenderer.invoke("desktop:minimize"),
     hide: () => ipcRenderer.invoke("desktop:hide"),
     expand: () => ipcRenderer.invoke("desktop:expand"),

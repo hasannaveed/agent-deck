@@ -44,7 +44,7 @@ These rules encode decisions made during development and should not be casually 
 9. A jump must target a validated terminal coordinate. Never guess by title or inject shell text.
 10. Report jump success only when the target was actually activated.
 11. Reuse an existing terminal window, tab, tmux client, or pane whenever possible. Avoid opening duplicate terminal windows.
-12. Jumping must never close the desktop pane. When pinned, it remains above other windows and returns to its compact always-on-top position after the target is focused.
+12. Jumping must never close the desktop pane. It remains above other windows and returns to its compact always-on-top position after the target is focused.
 13. Do not seed demo sessions automatically. Demo data is opt-in through the explicit demo command.
 14. Keep harness-specific behavior behind adapters or integrations so more harnesses can be added later without redesigning either UI.
 15. Keep setup and uninstall conservative, current-user-only, idempotent, and respectful of existing configuration.
@@ -240,7 +240,7 @@ The supported GUI is a native Electron desktop pane, not a normal website. Its r
 Expected behavior:
 
 - Default position: bottom-right of the usable desktop area.
-- Pinned/always-on-top by default.
+- Always on top in both expanded and collapsed modes; this is not a user-toggleable preference.
 - Visible across workspaces where the window manager supports it.
 - Minimize, hide, and close actions collapse it to a small bottom-right dock instead of quitting.
 - Clicking the dock expands the full pane.
@@ -254,7 +254,7 @@ On Linux, Electron defaults to XWayland for this app because native Wayland does
 
 After a jump, the terminal should receive keyboard focus while the pane remains visibly above it. The GNOME bridge performs a follow-up restack of the switchboard without stealing terminal keyboard focus.
 
-Occasional Chromium/XWayland diagnostics such as `GetVSyncParametersIfAvailable()` or `_NET_RESTACK_WINDOW` atom-cache messages are normally graphics/window-manager diagnostics, not daemon or terminal-session failures. Investigate them only when accompanied by visible blanking, flicker, broken focus, or a crash.
+The desktop launcher filters Chromium's exact `GetVSyncParametersIfAvailable()` fallback and `_NET_RESTACK_WINDOW` atom-cache diagnostics while preserving every other stderr line. Treat other Chromium/XWayland messages as actionable when they accompany visible blanking, flicker, broken focus, or a crash.
 
 ## Terminal jumping and focus providers
 
@@ -429,7 +429,7 @@ For behavior changes, a future session should also verify the actual end-to-end 
 - Reducer derives the correct primary state.
 - Both TUI and desktop show the same state.
 - Jump activates exactly one intended target.
-- Desktop remains alive and pinned after the jump.
+- Desktop remains alive and above other windows after the jump.
 - No sensitive content appears in stored events or diagnostics.
 
 Use temporary state directories in tests and diagnostics. Do not contaminate the user's live session database or integrations with demo/test data.
