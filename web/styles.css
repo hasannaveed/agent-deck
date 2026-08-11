@@ -800,6 +800,7 @@ a:focus-visible {
     inset 0 1px 0 rgb(255 255 255 / 4%);
   transition:
     border-color 150ms ease,
+    box-shadow 150ms ease,
     filter 150ms ease;
 }
 
@@ -848,19 +849,16 @@ a:focus-visible {
   --card-background: linear-gradient(145deg, #171717, #121212);
 }
 
-.session-row:hover,
-.session-row.is-selected {
-  border-color: color-mix(in srgb, var(--state-color) 52%, var(--card-line));
-}
-
 .session-row:hover {
+  border-color: color-mix(in srgb, var(--state-color) 52%, var(--card-line));
   filter: brightness(1.035);
 }
 
 .session-row.is-selected {
+  border-color: var(--card-ink);
   box-shadow:
-    0 16px 36px rgb(0 0 0 / 28%),
-    inset 0 0 0 1px color-mix(in srgb, var(--card-ink) 26%, transparent);
+    0 15px 34px rgb(0 0 0 / 22%),
+    inset 0 0 0 2px var(--card-ink);
 }
 
 .session-row.is-jumping {
