@@ -11,6 +11,7 @@
   --muted: #a5a6ac;
   --quiet: #696b73;
   --working: #4acb86;
+  --interrupted: #d69466;
   --unread: #2d7cf6;
   --attention: #ffd230;
   --error: #ff4e2f;
@@ -249,6 +250,7 @@ a:focus-visible {
 }
 
 .dock-status[data-state="working"] { --dock-state: var(--working); }
+.dock-status[data-state="interrupted"] { --dock-state: var(--interrupted); }
 .dock-status[data-state="needs_attention"] { --dock-state: var(--attention); }
 .dock-status[data-state="unread"] { --dock-state: var(--unread); }
 .dock-status[data-state="error"] { --dock-state: var(--error); }
@@ -829,6 +831,11 @@ a:focus-visible {
   --card-background: linear-gradient(145deg, #161916, #111513);
 }
 
+.session-row.state-interrupted {
+  --state-color: var(--interrupted);
+  --card-background: linear-gradient(145deg, #1a1715, #141312);
+}
+
 .session-row.state-unread {
   --state-color: var(--unread);
   --card-background: #2d7cf6;
@@ -1228,6 +1235,10 @@ kbd {
 
 .state-badge[data-state="working"] {
   color: var(--working);
+}
+
+.state-badge[data-state="interrupted"] {
+  color: var(--interrupted);
 }
 
 .state-badge[data-state="unread"] {

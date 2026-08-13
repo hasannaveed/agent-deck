@@ -1,21 +1,36 @@
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import {
+  closeSync,
   existsSync,
+  fstatSync,
+  openSync,
   readFileSync,
+  readSync,
   readdirSync,
   readlinkSync,
 } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { displayHarness, EVENT_KINDS } from "../domain.js";
+import {
+  displayHarness,
+  EVENT_KINDS,
+  PROCESS_START_TOLERANCE_MS,
+} from "../domain.js";
+import {
+  isVisualStudioCodeCodexProcess,
+  visualStudioCodeHostFrom,
+} from "../vscode.js";
 
 const CPU_TICKS_PER_SECOND = 100;
 // Full-screen TUIs animate even while idle, so activity must rise clearly above
 // that background churn before Switchboard labels a process as working.
 const ACTIVE_CPU_FRACTION = 0.08;
 const ACTIVE_IO_CHARS_PER_SECOND = 32 * 1024;
+const CODEX_ROLLOUT_PREFIX_BYTES = 64 * 1024;
+const CODEX_ROLLOUT_TAIL_BYTES = 512 * 1024;
+const CODEX_ROLLOUT_FILE = /(?:^|\/)rollout-[^/]*-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/i;
 export const NESTED_HARNESS_ENV = "AGENT_SWITCHBOARD_CHILD";
 
 function safeRead(file, encoding = "utf8") {
@@ -32,6 +47,99 @@ function safeReadlink(file) {
   } catch {
     return null;
   }
+}
+
+function safeReadRange(file, start, length) {
+  let descriptor;
+  try {
+    descriptor = openSync(file, "r");
+    const size = fstatSync(descriptor).size;
+    const position = Math.max(0, Math.min(size, start < 0 ? size + start : start));
+    const available = Math.max(0, Math.min(length, size - position));
+    const buffer = Buffer.allocUnsafe(available);
+    const bytesRead = available ? readSync(descriptor, buffer, 0, available, position) : 0;
+    return { text: buffer.subarray(0, bytesRead).toString("utf8"), position, size };
+  } catch {
+    return null;
+  } finally {
+    if (descriptor !== undefined) {
+      try {
+        closeSync(descriptor);
+      } catch {}
+    }
+  }
+}
+
+// Codex records lifecycle events in its rollout JSONL. Read only a bounded
+// prefix (to reject subagent rollouts) and tail, and only parse short lifecycle
+// lines. Prompt, reasoning, tool, and assistant content never leave this helper.
+export function readCodexRolloutLifecycle(file) {
+  const match = String(file || "").match(CODEX_ROLLOUT_FILE);
+  if (!match) return null;
+  const prefix = safeReadRange(file, 0, CODEX_ROLLOUT_PREFIX_BYTES);
+  if (!prefix || !/"type"\s*:\s*"session_meta"/.test(prefix.text)) return null;
+  if (
+    /"thread_source"\s*:\s*"subagent"/.test(prefix.text) ||
+    /"source"\s*:\s*\{\s*"subagent"/.test(prefix.text)
+  ) {
+    return null;
+  }
+
+  const result = { sessionId: match[1].toLowerCase(), lifecycle: null };
+  const tail = safeReadRange(file, -CODEX_ROLLOUT_TAIL_BYTES, CODEX_ROLLOUT_TAIL_BYTES);
+  if (!tail) return result;
+  let lines = tail.text.split(/\r?\n/);
+  if (tail.position > 0) lines = lines.slice(1);
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    const line = lines[index];
+    if (
+      !/"type"\s*:\s*"event_msg"/.test(line) ||
+      !/"type"\s*:\s*"(?:task_started|task_complete|turn_aborted)"/.test(line)
+    ) {
+      continue;
+    }
+    try {
+      const record = JSON.parse(line);
+      const payload = record?.payload;
+      if (record?.type !== "event_msg" || !payload || typeof payload !== "object") continue;
+      if (!["task_started", "task_complete", "turn_aborted"].includes(payload.type)) continue;
+      if (payload.type === "turn_aborted" && payload.reason !== "interrupted") continue;
+      const occurredAt = Date.parse(record.timestamp || payload.completed_at || payload.started_at);
+      if (!Number.isFinite(occurredAt) || typeof payload.turn_id !== "string") continue;
+      result.lifecycle = {
+        type: payload.type,
+        turnId: payload.turn_id,
+        occurredAt,
+      };
+      break;
+    } catch {
+      // The file may be mid-write. A complete lifecycle line will be picked up
+      // on the next discovery pass.
+    }
+  }
+  return result;
+}
+
+export function readCodexProcessLifecycle(processInfo) {
+  if (processInfo?.harness !== "codex" || !Number.isInteger(processInfo.pid)) return null;
+  let descriptors;
+  try {
+    descriptors = readdirSync(`/proc/${processInfo.pid}/fd`);
+  } catch {
+    return null;
+  }
+  const candidates = [];
+  const paths = new Set();
+  for (const descriptor of descriptors) {
+    const target = safeReadlink(`/proc/${processInfo.pid}/fd/${descriptor}`);
+    if (!target || paths.has(target) || !CODEX_ROLLOUT_FILE.test(target)) continue;
+    paths.add(target);
+    const candidate = readCodexRolloutLifecycle(target);
+    if (candidate) candidates.push(candidate);
+  }
+  return candidates.sort(
+    (left, right) => (right.lifecycle?.occurredAt || 0) - (left.lifecycle?.occurredAt || 0),
+  )[0] || null;
 }
 
 function basename(value) {
@@ -294,6 +402,7 @@ export function isNestedHarnessProcess(processInfo, read = readProcessInfo) {
 export function isInteractiveHarnessProcess(processInfo) {
   if (!processInfo?.harness) return false;
   if (["T", "t", "Z", "X", "x"].includes(processInfo.state)) return false;
+  if (isVisualStudioCodeCodexProcess(processInfo)) return true;
   if (!processInfo.tty?.startsWith("/dev/")) return false;
   return (
     processInfo.processGroup > 0 &&
@@ -323,6 +432,18 @@ export function processActivitySample(previous, current, elapsedMs) {
   return comparable ? "quiet" : null;
 }
 
+function sameProcessIncarnation(session, item) {
+  if (!session || !item || session.harness !== item.harness || session.pid !== item.pid) return false;
+  if (session.nativeSessionId === item.nativeSessionId) return true;
+  const sessionStartedAt = Number(session.startedAt);
+  const processStartedAt = Number(item.startedAt);
+  return (
+    Number.isFinite(sessionStartedAt) &&
+    Number.isFinite(processStartedAt) &&
+    Math.abs(sessionStartedAt - processStartedAt) <= PROCESS_START_TOLERANCE_MS
+  );
+}
+
 function approximateStartTime(startTicks) {
   const uptime = Number.parseFloat(safeRead("/proc/uptime")?.split(" ")[0] || "0");
   if (!uptime || !startTicks) return Date.now();
@@ -341,16 +462,23 @@ export function scanHarnessProcesses() {
     const info = readProcessInfo(pid);
     if (!isInteractiveHarnessProcess(info)) continue;
     if (isNestedHarnessProcess(info)) continue;
+    const applicationHost = visualStudioCodeHostFrom(info, readProcessInfo);
     const project = info.cwd ? path.basename(info.cwd) : null;
     const terminalTitle = readTerminalTitle(info);
     const titleHint = activityHintFromTerminalTitle(info.harness, terminalTitle);
+    // A VS Code app server may own several threads at once, so an arbitrary
+    // open rollout file cannot safely identify that host process's one row.
+    const codexRollout = applicationHost ? null : readCodexProcessLifecycle(info);
     found.push({
       ...info,
       processKey: `${info.harness}:${pid}:${info.startTicks}`,
-      nativeSessionId: `process-${pid}-${info.startTicks}`,
+      nativeSessionId: codexRollout?.sessionId || `process-${pid}-${info.startTicks}`,
       title: project ? `${project} · ${info.harness}` : `${info.harness} process ${pid}`,
       project,
       terminalTitle,
+      codexRollout,
+      hostApplication: applicationHost?.application || null,
+      hostPid: applicationHost?.pid || null,
       activityHint:
         titleHint ||
         readOpenCodeActivityHint({
@@ -376,6 +504,7 @@ export function findHarnessAncestor(
     const info = read(pid);
     if (!info) return null;
     if (info.harness && (!expectedHarness || info.harness === expectedHarness)) {
+      const applicationHost = visualStudioCodeHostFrom(info, read);
       return {
         pid: info.pid,
         cwd: info.cwd,
@@ -386,6 +515,8 @@ export function findHarnessAncestor(
         hostTerminalKind: info.hostTerminalKind,
         hostTerminalTarget: info.hostTerminalTarget,
         hostTerminalInstance: info.hostTerminalInstance,
+        hostApplication: applicationHost?.application || null,
+        hostPid: applicationHost?.pid || null,
         startedAt: approximateStartTime(info.startTicks),
         nested: isNestedHarnessProcess(info, read),
       };
@@ -414,6 +545,7 @@ export class LinuxProcessDiscovery {
     this.onProcessDiscovered = onProcessDiscovered;
     this.known = new Map();
     this.activity = new Map();
+    this.codexApprovalEvidence = new Map();
     this.instanceId = randomUUID();
     this.eventSequence = 0;
     this.initialized = false;
@@ -437,24 +569,31 @@ export class LinuxProcessDiscovery {
   }
 
   markGone(item, key) {
-    const resolvedId = this.store.resolveSessionForPid(item.harness, item.pid);
-    const resolved = resolvedId ? this.store.getSession(resolvedId) : null;
-    this.store.ingest({
-      eventId: this.eventId(key, "gone"),
-      harness: item.harness,
-      nativeSessionId: resolved?.nativeSessionId || item.nativeSessionId,
-      kind: EVENT_KINDS.PROCESS_GONE,
-      nativeType: "process.exited",
-      occurredAt: this.now(),
-      telemetry: "process",
-      confidence: 0.85,
-      metadata: { pid: item.pid },
-    });
+    const liveSessions = this.store
+      .listLiveSessionsForPid(item.harness, item.pid)
+      .filter((session) => sameProcessIncarnation(session, item));
+    const targets = liveSessions.length ? liveSessions : [item];
+    const occurredAt = this.now();
+    for (const target of targets) {
+      this.store.ingest({
+        eventId: this.eventId(key, `gone:${target.nativeSessionId}`),
+        harness: item.harness,
+        nativeSessionId: target.nativeSessionId || item.nativeSessionId,
+        kind: EVENT_KINDS.PROCESS_GONE,
+        nativeType: "process.exited",
+        occurredAt,
+        telemetry: "process",
+        confidence: 0.85,
+        metadata: { pid: item.pid },
+      });
+    }
   }
 
   processSession(item) {
-    const id = this.store.resolveSessionForPid(item.harness, item.pid);
-    return id ? this.store.getSession(id) : null;
+    const session = this.store
+      .listLiveSessionsForPid(item.harness, item.pid)
+      .find((candidate) => sameProcessIncarnation(candidate, item));
+    return session || null;
   }
 
   emitInferredActivity(item, key, kind, nativeType, activity, occurredAt) {
@@ -478,6 +617,60 @@ export class LinuxProcessDiscovery {
       metadata: { pid: item.pid },
     });
     return result.accepted || result.session?.activity === activity;
+  }
+
+  emitCodexRolloutLifecycle(item) {
+    const signal = item.codexRollout?.lifecycle;
+    const nativeSessionId = item.codexRollout?.sessionId;
+    if (!signal || !nativeSessionId) return;
+    const session = this.processSession(item);
+    if (session && session.telemetry !== "process" && session.lastEventAt > signal.occurredAt) {
+      const newerTurnStarted = [
+        "UserPromptSubmit",
+        "turn/started",
+        "codex.rollout.task_started",
+      ].includes(session.lastEventType);
+      if (signal.type !== "turn_aborted" || newerTurnStarted) return;
+    }
+
+    let kind;
+    if (signal.type === "task_started") kind = EVENT_KINDS.WORK_STARTED;
+    else if (signal.type === "turn_aborted") kind = EVENT_KINDS.WORK_INTERRUPTED;
+    else if (signal.type === "task_complete") {
+      // If the human already opened this result, use the lifecycle record only
+      // to clear a stale process-level Working state; do not recreate Unread.
+      kind = session?.seenAt >= signal.occurredAt
+        ? EVENT_KINDS.ACTIVITY_IDLE
+        : EVENT_KINDS.WORK_COMPLETED;
+    } else return;
+
+    this.store.ingest({
+      eventId: `${kind}:${signal.turnId}`,
+      harness: "codex",
+      nativeSessionId,
+      kind,
+      nativeType: `codex.rollout.${signal.type}`,
+      occurredAt: signal.occurredAt,
+      telemetry: "native",
+      confidence: 1,
+      humanInitiated: signal.type === "task_started",
+      metadata: {
+        cwd: item.cwd,
+        project: item.project,
+        pid: item.pid,
+        terminal: item.terminal,
+        terminalKind: item.terminalKind,
+        terminalTarget: item.terminalTarget,
+        terminalInstance: item.terminalInstance,
+        hostApplication: item.hostApplication,
+        hostPid: item.hostPid,
+        startedAt: item.startedAt,
+      },
+      completion:
+        signal.type === "task_complete"
+          ? { outcome: "completed", summary: "Codex finished the turn" }
+          : undefined,
+    });
   }
 
   emitInferredAttention(item, key, occurredAt) {
@@ -521,12 +714,51 @@ export class LinuxProcessDiscovery {
     return result.accepted || result.session?.attention !== "required";
   }
 
+  updateCodexApprovalResolution(key, item, session, occurredAt) {
+    const workingTitle =
+      item.harness === "codex" &&
+      item.terminalKind === "tmux" &&
+      activityHintFromTerminalTitle("codex", item.terminalTitle) === "working";
+    const pendingApproval =
+      session?.presence === "live" &&
+      session.attention === "required" &&
+      session.attentionKind === "approval";
+    if (!workingTitle || !pendingApproval) {
+      this.codexApprovalEvidence.delete(key);
+      return false;
+    }
+
+    // Tie the evidence to this exact attention event. A new permission prompt
+    // restarts the debounce even if the pane title stays in its working state.
+    const attentionEventAt = session.lastEventAt;
+    const previous = this.codexApprovalEvidence.get(key);
+    const scans = previous?.attentionEventAt === attentionEventAt ? previous.scans + 1 : 1;
+    this.codexApprovalEvidence.set(key, { attentionEventAt, scans });
+    if (scans < 2) return false;
+
+    this.codexApprovalEvidence.delete(key);
+    const result = this.store.ingest({
+      eventId: this.eventId(key, `approval-resolved:${attentionEventAt}`),
+      harness: "codex",
+      nativeSessionId: session.nativeSessionId,
+      kind: EVENT_KINDS.ATTENTION_RESOLVED,
+      nativeType: "process.status.approval_resolved",
+      occurredAt,
+      telemetry: "process",
+      confidence: 0.8,
+      metadata: { pid: item.pid },
+    });
+    return result.accepted || result.session?.attention !== "required";
+  }
+
   updateInferredActivity(key, previous, current, occurredAt) {
     const session = this.processSession(current);
     if (session && session.telemetry !== "process") {
+      this.updateCodexApprovalResolution(key, current, session, occurredAt);
       this.activity.delete(key);
       return;
     }
+    this.codexApprovalEvidence.delete(key);
 
     let observation = this.activity.get(key);
     if (!observation) {
@@ -534,7 +766,7 @@ export class LinuxProcessDiscovery {
         state:
           session?.attention === "required"
             ? "needs_attention"
-            : ["working", "idle"].includes(session?.activity)
+            : ["working", "interrupted", "idle"].includes(session?.activity)
               ? session.activity
               : null,
         quietSince: null,
@@ -644,15 +876,14 @@ export class LinuxProcessDiscovery {
 
       if (!this.initialized) {
         const currentSessionIds = new Set([...current.values()].map((item) => item.nativeSessionId));
-        const currentPids = new Set(
-          [...current.values()].map((item) => `${item.harness}:${item.pid}`),
-        );
+        const currentProcesses = [...current.values()];
         for (const session of this.store.listLivePidSessions()) {
           const processOnly =
             session.telemetry === "process" && session.nativeSessionId.startsWith("process-");
           const stillRunning = processOnly
-            ? currentSessionIds.has(session.nativeSessionId)
-            : currentPids.has(`${session.harness}:${session.pid}`);
+            ? currentSessionIds.has(session.nativeSessionId) ||
+              currentProcesses.some((item) => sameProcessIncarnation(session, item))
+            : currentProcesses.some((item) => sameProcessIncarnation(session, item));
           if (stillRunning) continue;
           this.markGone(session, `${session.harness}:${session.pid || session.nativeSessionId}:reconcile`);
         }
@@ -661,32 +892,47 @@ export class LinuxProcessDiscovery {
 
       for (const [key, item] of current) {
         if (this.known.has(key)) continue;
-        this.store.ingest({
-          eventId: this.eventId(key, "seen"),
-          harness: item.harness,
-          nativeSessionId: item.nativeSessionId,
-          kind: EVENT_KINDS.PROCESS_SEEN,
-          nativeType: "process.discovered",
-          occurredAt,
-          telemetry: "process",
-          confidence: 0.45,
-          metadata: {
-            title: item.title,
-            cwd: item.cwd,
-            project: item.project,
-            pid: item.pid,
-            terminal: item.terminal,
-            terminalKind: item.terminalKind,
-            terminalTarget: item.terminalTarget,
-            terminalInstance: item.terminalInstance,
-            startedAt: item.startedAt,
-          },
-        });
+        const matchingSessions = this.store
+          .listLiveSessionsForPid(item.harness, item.pid)
+          .filter((session) => sameProcessIncarnation(session, item));
+        const nativeSessions = matchingSessions.filter(
+          (session) => !session.nativeSessionId.startsWith("process-"),
+        );
+        const targets = nativeSessions.length ? nativeSessions : [matchingSessions[0] || item];
+        for (const target of targets) {
+          const preserveNativeLocation =
+            Boolean(item.hostApplication) && target.telemetry !== "process";
+          const nativeSessionId = target.nativeSessionId || item.nativeSessionId;
+          this.store.ingest({
+            eventId: this.eventId(key, `seen:${nativeSessionId}`),
+            harness: item.harness,
+            nativeSessionId,
+            kind: EVENT_KINDS.PROCESS_SEEN,
+            nativeType: "process.discovered",
+            occurredAt,
+            telemetry: "process",
+            confidence: 0.45,
+            metadata: {
+              title: preserveNativeLocation ? null : item.title,
+              cwd: preserveNativeLocation ? null : item.cwd,
+              project: preserveNativeLocation ? null : item.project,
+              pid: item.pid,
+              terminal: item.terminal,
+              terminalKind: item.terminalKind,
+              terminalTarget: item.terminalTarget,
+              terminalInstance: item.terminalInstance,
+              hostApplication: item.hostApplication,
+              hostPid: item.hostPid,
+              startedAt: item.startedAt,
+            },
+          });
+        }
         this.notifyProcessDiscovered(item, occurredAt);
       }
 
       for (const [key, item] of current) {
         const previous = this.known.get(key);
+        this.emitCodexRolloutLifecycle(item);
         this.updateInferredActivity(key, previous, item, occurredAt);
       }
 
@@ -694,6 +940,7 @@ export class LinuxProcessDiscovery {
         if (current.has(key)) continue;
         this.markGone(item, key);
         this.activity.delete(key);
+        this.codexApprovalEvidence.delete(key);
       }
 
       this.known = current;

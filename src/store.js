@@ -2,7 +2,7 @@ import { EventEmitter } from "node:events";
 import { mkdirSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { normalizeEvent } from "./domain.js";
+import { normalizeEvent, PROCESS_START_TOLERANCE_MS } from "./domain.js";
 import {
   decorateSession,
   reduceSession,
@@ -34,6 +34,8 @@ const SESSION_COLUMNS = [
   "terminalKind",
   "terminalTarget",
   "terminalInstance",
+  "hostApplication",
+  "hostPid",
   "startedAt",
   "lastActivityAt",
   "completedAt",
@@ -75,7 +77,9 @@ function eventSummary(event) {
 function sessionTerminalIdentity(session) {
   if (!session.harness || !session.cwd) return null;
   let locator = null;
-  if (session.terminalKind && session.terminalTarget) {
+  if (session.hostApplication) {
+    locator = `host:${session.hostApplication}:${session.hostPid || "workspace"}`;
+  } else if (session.terminalKind && session.terminalTarget) {
     locator = `${session.terminalKind}:${session.terminalTarget}`;
   } else if (session.terminal) {
     const terminal = session.terminal.trim().toLowerCase();
@@ -93,12 +97,20 @@ function isProcessDiscoveredSession(session) {
   return session.telemetry === "process" && session.nativeSessionId.startsWith("process-");
 }
 
+function matchesEventProcessStart(session, event) {
+  if (!event.metadata.startedAt) return true;
+  return Math.abs(Number(session.startedAt) - event.metadata.startedAt) <= PROCESS_START_TOLERANCE_MS;
+}
+
 function collapseSupersededProcessSessions(sessions) {
   const exactLiveLocations = new Set();
+  const exactClosedLocations = new Set();
   for (const session of sessions) {
-    if (isProcessDiscoveredSession(session) || session.presence !== "live") continue;
+    if (isProcessDiscoveredSession(session)) continue;
     const identity = sessionTerminalIdentity(session);
-    if (identity) exactLiveLocations.add(identity);
+    if (!identity) continue;
+    if (session.presence === "live") exactLiveLocations.add(identity);
+    else exactClosedLocations.add(identity);
   }
 
   const winners = new Map();
@@ -123,6 +135,7 @@ function collapseSupersededProcessSessions(sessions) {
     const identity = sessionTerminalIdentity(session);
     if (!identity) return true;
     if (exactLiveLocations.has(identity)) return false;
+    if (session.presence === "closed" && exactClosedLocations.has(identity)) return false;
     return winners.get(identity)?.id === session.id;
   });
 }
@@ -171,6 +184,8 @@ export class SwitchboardStore extends EventEmitter {
         terminalKind TEXT,
         terminalTarget TEXT,
         terminalInstance TEXT,
+        hostApplication TEXT,
+        hostPid INTEGER,
         startedAt INTEGER NOT NULL,
         lastActivityAt INTEGER NOT NULL,
         completedAt INTEGER,
@@ -219,13 +234,15 @@ export class SwitchboardStore extends EventEmitter {
       ["terminalKind", "TEXT"],
       ["terminalTarget", "TEXT"],
       ["terminalInstance", "TEXT"],
+      ["hostApplication", "TEXT"],
+      ["hostPid", "INTEGER"],
     ]) {
       if (!sessionColumns.has(column)) this.db.exec(`ALTER TABLE sessions ADD COLUMN ${column} ${type}`);
     }
 
     this.db
       .prepare(
-        `INSERT INTO meta(key, value) VALUES ('schemaVersion', '2')
+        `INSERT INTO meta(key, value) VALUES ('schemaVersion', '3')
          ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
       )
       .run();
@@ -246,10 +263,11 @@ export class SwitchboardStore extends EventEmitter {
        ON CONFLICT(id) DO UPDATE SET ${updates}`,
     );
     this.getSessionStatement = this.db.prepare("SELECT * FROM sessions WHERE id = ?");
-    this.getProvisionalByPidStatement = this.db.prepare(
+    this.getLiveProvisionalsByPidStatement = this.db.prepare(
       `SELECT * FROM sessions
-       WHERE harness = ? AND pid = ? AND nativeSessionId LIKE 'process-%' AND id != ?
-       ORDER BY updatedAt DESC LIMIT 1`,
+       WHERE harness = ? AND pid = ? AND presence = 'live'
+         AND nativeSessionId LIKE 'process-%' AND id != ?
+       ORDER BY updatedAt DESC`,
     );
     this.insertEventStatement = this.db.prepare(
       `INSERT OR IGNORE INTO events
@@ -285,16 +303,22 @@ export class SwitchboardStore extends EventEmitter {
       }
 
       let previous = this.getSession(event.sessionKey);
-      if (!previous && event.metadata.pid) {
-        const provisional = fromDatabaseSession(
-          this.getProvisionalByPidStatement.get(event.harness, event.metadata.pid, event.sessionKey),
-        );
-        if (provisional) {
-          previous = {
-            ...provisional,
-            id: event.sessionKey,
-            nativeSessionId: event.nativeSessionId,
-          };
+      const provisionals =
+        event.metadata.pid && !event.nativeSessionId.startsWith("process-")
+          ? this.getLiveProvisionalsByPidStatement
+              .all(event.harness, event.metadata.pid, event.sessionKey)
+              .map(fromDatabaseSession)
+              .filter((session) => matchesEventProcessStart(session, event))
+          : [];
+      if (!previous && provisionals.length) {
+        previous = {
+          ...provisionals[0],
+          id: event.sessionKey,
+          nativeSessionId: event.nativeSessionId,
+        };
+      }
+      if (provisionals.length) {
+        for (const provisional of provisionals) {
           this.db.prepare("UPDATE events SET sessionId = ? WHERE sessionId = ?").run(event.sessionKey, provisional.id);
           this.db.prepare("DELETE FROM sessions WHERE id = ?").run(provisional.id);
         }
@@ -337,6 +361,18 @@ export class SwitchboardStore extends EventEmitter {
          WHERE presence = 'live' AND pid IS NOT NULL`,
       )
       .all()
+      .map(fromDatabaseSession);
+  }
+
+  listLiveSessionsForPid(harness, pid) {
+    return this.db
+      .prepare(
+        `SELECT * FROM sessions
+         WHERE presence = 'live' AND harness = ? AND pid = ?
+         ORDER BY CASE WHEN nativeSessionId LIKE 'process-%' THEN 1 ELSE 0 END,
+                  updatedAt DESC`,
+      )
+      .all(harness, pid)
       .map(fromDatabaseSession);
   }
 

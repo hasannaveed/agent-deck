@@ -2,12 +2,17 @@ import { constants, accessSync } from "node:fs";
 import { execFile, spawn } from "node:child_process";
 import path from "node:path";
 import { promisify } from "node:util";
-import { captureGnomeTerminal, focusGnomeTerminal } from "./gnome-bridge.js";
+import {
+  captureGnomeTerminal,
+  focusGnomeApplicationWindow,
+  focusGnomeTerminal,
+} from "./gnome-bridge.js";
 import {
   parseTmuxClients,
   terminalTargetForTmuxClient,
   TMUX_CLIENT_FORMAT,
 } from "./tmux-clients.js";
+import { parseVisualStudioCodeStatus } from "./vscode.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -43,9 +48,12 @@ function resolveTerminalLauncher(which) {
 }
 
 async function defaultRun(file, args, options = {}) {
+  const timeoutMs = Number.isFinite(options.timeoutMs)
+    ? Math.max(250, Math.min(5000, options.timeoutMs))
+    : 1800;
   return execFileAsync(file, args, {
     encoding: "utf8",
-    timeout: 1800,
+    timeout: timeoutMs,
     maxBuffer: 256 * 1024,
     windowsHide: true,
     ...(options.env ? { env: options.env } : {}),
@@ -147,6 +155,58 @@ async function focusAttachedTmuxTerminal({
   return activationFailure;
 }
 
+async function focusVisualStudioCode(session, { which, run, launch, env }) {
+  const code = which("code") || which("code-insiders");
+  if (!code) {
+    return {
+      ok: false,
+      code: "vscode_unavailable",
+      message: "The VS Code command-line launcher is not available.",
+    };
+  }
+
+  const extensionHostPid = validNumericTarget(session.hostPid);
+  if (extensionHostPid && which("gdbus")) {
+    try {
+      const status = await run(code, ["--status"], { timeoutMs: 3500 });
+      const window = parseVisualStudioCodeStatus(status.stdout, extensionHostPid);
+      if (window) {
+        const focused = await focusGnomeApplicationWindow(
+          { application: "vscode", pid: window.pid },
+          { env, which, run },
+        );
+        if (focused.ok) {
+          return {
+            ok: true,
+            provider: "vscode",
+            reused: true,
+            message: focused.message || "Focused the existing VS Code window.",
+          };
+        }
+      }
+    } catch {
+      // VS Code's diagnostic mapping and the GNOME connector are optional.
+      // Opening the known workspace below remains a safe, useful fallback.
+    }
+  }
+
+  const workspace = validUnixPath(session.cwd);
+  if (!workspace) {
+    return {
+      ok: false,
+      code: "vscode_window_unavailable",
+      message: "The VS Code window closed and this session has no workspace to reopen.",
+    };
+  }
+  await launch(code, [workspace]);
+  return {
+    ok: true,
+    provider: "vscode",
+    launched: true,
+    message: `Opened ${session.project || path.basename(workspace)} in VS Code.`,
+  };
+}
+
 export async function focusSession(
   session,
   {
@@ -166,6 +226,10 @@ export async function focusSession(
   }
 
   try {
+    if (session.hostApplication === "vscode") {
+      return await focusVisualStudioCode(session, { which, run, launch, env });
+    }
+
     if (session.terminalKind === "tmux") {
       const target = validTmuxTarget(session.terminalTarget);
       const tmux = which("tmux");
@@ -292,6 +356,6 @@ export async function focusSession(
   return {
     ok: false,
     code: "unsupported_terminal",
-    message: "Direct switching needs tmux, WezTerm, kitty, Zellij, or an automatically routed GNOME Terminal screen.",
+    message: "Direct switching needs a supported application host, tmux, WezTerm, kitty, Zellij, or an automatically routed GNOME Terminal screen.",
   };
 }

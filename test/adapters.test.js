@@ -26,9 +26,17 @@ test("Codex app-server events map to work and approval signals", () => {
 
   const correlated = translateCodexEvent(
     { method: "turn/started", params: { turn: { id: "turn-1" } } },
-    { nativeSessionId: "thread-1" },
+    { nativeSessionId: "thread-1", hostApplication: "vscode", hostPid: 7846 },
   );
   assert.equal(correlated[0].nativeSessionId, "thread-1");
+  assert.equal(correlated[0].metadata.hostApplication, "vscode");
+  assert.equal(correlated[0].metadata.hostPid, 7846);
+
+  const interrupted = translateCodexEvent({
+    method: "turn/completed",
+    params: { threadId: "thread-1", turn: { id: "turn-2", status: "interrupted" } },
+  });
+  assert.equal(interrupted[0].kind, "work_interrupted");
 });
 
 test("Claude hooks distinguish questions, completion, and failure", () => {
@@ -51,6 +59,13 @@ test("Claude hooks distinguish questions, completion, and failure", () => {
   });
   assert.equal(failed[0].kind, "session_error");
   assert.match(failed[0].error.summary, /api error/);
+
+  const interrupted = translateClaudeEvent({
+    hook_event_name: "StopFailure",
+    session_id: "claude-1",
+    error: "user_interrupted",
+  });
+  assert.equal(interrupted[0].kind, "work_interrupted");
 
   const toolFailure = translateClaudeEvent({
     hook_event_name: "PostToolUseFailure",
@@ -88,6 +103,31 @@ test("OpenCode plugin events map busy, idle, permission, and error states", () =
   assert.equal(idle[0].kind, "work_completed");
   assert.equal(permission[0].kind, "attention_requested");
   assert.equal(error[0].error.kind, "ProviderError");
+
+  const interrupted = translateOpenCodeEvent(
+    {
+      event: {
+        type: "session.error",
+        properties: { sessionID: "open-1", error: { name: "MessageAbortedError" } },
+      },
+    },
+    context,
+  );
+  assert.equal(interrupted[0].kind, "work_interrupted");
+});
+
+test("Codex lifecycle events from hooks and native streams share stable turn ids", () => {
+  const hook = translateCodexEvent({
+    hook_event_name: "UserPromptSubmit",
+    session_id: "codex-stable-turn",
+    turn_id: "turn-stable",
+  });
+  const native = translateCodexEvent({
+    method: "turn/started",
+    params: { threadId: "codex-stable-turn", turn: { id: "turn-stable" } },
+  });
+  assert.equal(hook[0].eventId, "work_started:turn-stable");
+  assert.equal(native[0].eventId, hook[0].eventId);
 });
 
 test("OpenCode permission and question variants require attention until resolved", () => {

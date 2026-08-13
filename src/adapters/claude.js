@@ -73,13 +73,18 @@ export function translateClaudeEvent(raw, context = {}) {
       });
     }
   } else if (type === "StopFailure") {
-    add({
-      kind: EVENT_KINDS.SESSION_ERROR,
-      error: {
-        kind: String(raw?.error || "claude_error"),
-        summary: `Claude Code stopped: ${String(raw?.error || "unknown error").replaceAll("_", " ")}`,
-      },
-    });
+    const failure = String(raw?.error || "claude_error");
+    if (/interrupt|abort|cancel/i.test(failure)) {
+      add({ kind: EVENT_KINDS.WORK_INTERRUPTED });
+    } else {
+      add({
+        kind: EVENT_KINDS.SESSION_ERROR,
+        error: {
+          kind: failure,
+          summary: `Claude Code stopped: ${failure.replaceAll("_", " ")}`,
+        },
+      });
+    }
   } else if (type === "SessionEnd") {
     add({ kind: EVENT_KINDS.SESSION_ENDED });
   }

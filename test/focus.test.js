@@ -336,6 +336,93 @@ test("GNOME Terminal reports an unlinked tab instead of launching a replacement"
   );
 });
 
+test("VS Code focus activates the exact window for its extension host", async () => {
+  const calls = [];
+  let launched = false;
+  const result = await focusSession(
+    liveSession({
+      terminalKind: null,
+      terminalTarget: null,
+      terminalInstance: null,
+      hostApplication: "vscode",
+      hostPid: 7846,
+      cwd: "/work/aim-project",
+      project: "aim-project",
+    }),
+    {
+      which: (name) => ({ code: "/usr/bin/code", gdbus: "/usr/bin/gdbus" })[name] || null,
+      run: async (file, args) => {
+        calls.push([file, args]);
+        if (file === "/usr/bin/code") {
+          return {
+            stdout: [
+              "CPU % Mem MB PID Process",
+              "0 400 7549 window [1] (aim-project - Visual Studio Code)",
+              "0 200 7846 extension-host [1]",
+            ].join("\n"),
+            stderr: "",
+          };
+        }
+        return { stdout: "(true, 'Focused the existing VS Code window.')\n", stderr: "" };
+      },
+      launch: async () => {
+        launched = true;
+      },
+    },
+  );
+
+  assert.deepEqual(result, {
+    ok: true,
+    provider: "vscode",
+    reused: true,
+    message: "Focused the existing VS Code window.",
+  });
+  assert.equal(launched, false);
+  assert.deepEqual(calls[1], [
+    "/usr/bin/gdbus",
+    [
+      "call",
+      "--session",
+      "--dest",
+      "com.skylabs.AgentSwitchboard.GnomeBridge",
+      "--object-path",
+      "/com/skylabs/AgentSwitchboard/GnomeBridge",
+      "--method",
+      "com.skylabs.AgentSwitchboard.GnomeBridge1.FocusApplicationWindow",
+      "7549",
+      "vscode",
+    ],
+  ]);
+});
+
+test("VS Code focus safely falls back to opening the known workspace", async () => {
+  const launches = [];
+  const result = await focusSession(
+    liveSession({
+      terminalKind: null,
+      terminalTarget: null,
+      terminalInstance: null,
+      hostApplication: "vscode",
+      hostPid: 7846,
+      cwd: "/work/aim-project",
+      project: "aim-project",
+    }),
+    {
+      which: (name) => (name === "code" ? "/usr/bin/code" : null),
+      run: async () => assert.fail("status lookup is unnecessary without the GNOME connector"),
+      launch: async (file, args) => launches.push([file, args]),
+    },
+  );
+
+  assert.deepEqual(result, {
+    ok: true,
+    provider: "vscode",
+    launched: true,
+    message: "Opened aim-project in VS Code.",
+  });
+  assert.deepEqual(launches, [["/usr/bin/code", ["/work/aim-project"]]]);
+});
+
 test("unsupported, stale, and malformed targets fail without executing commands", async () => {
   let executed = false;
   const options = {
@@ -352,6 +439,21 @@ test("unsupported, stale, and malformed targets fail without executing commands"
     "kitty_unavailable",
   );
   assert.equal((await focusSession(liveSession({ terminalKind: null, terminalTarget: null }), options)).code, "unsupported_terminal");
+  assert.equal(
+    (
+      await focusSession(
+        liveSession({
+          terminalKind: null,
+          terminalTarget: null,
+          hostApplication: "vscode",
+          hostPid: "$(touch nope)",
+          cwd: "$(touch nope)",
+        }),
+        options,
+      )
+    ).code,
+    "vscode_window_unavailable",
+  );
   assert.equal(
     (
       await focusSession(

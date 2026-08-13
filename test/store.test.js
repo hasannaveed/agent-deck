@@ -81,6 +81,91 @@ test("a native event merges a process-discovered provisional session by PID", ()
   }
 });
 
+test("a reused PID does not merge a closed provisional session into new native work", () => {
+  const store = new SwitchboardStore(":memory:");
+  try {
+    const provisional = store.ingest({
+      eventId: "old-process-seen",
+      harness: "claude",
+      nativeSessionId: "process-4242-10",
+      kind: EVENT_KINDS.PROCESS_SEEN,
+      nativeType: "process.discovered",
+      telemetry: "process",
+      metadata: { pid: 4242, cwd: "/work/old" },
+    });
+    store.ingest({
+      eventId: "old-process-error",
+      harness: "claude",
+      nativeSessionId: "process-4242-10",
+      kind: EVENT_KINDS.SESSION_ERROR,
+      nativeType: "process.error",
+      telemetry: "process",
+      metadata: { pid: 4242 },
+      error: { kind: "old_failure", summary: "Old process failed" },
+    });
+    store.ingest({
+      eventId: "old-process-gone",
+      harness: "claude",
+      nativeSessionId: "process-4242-10",
+      kind: EVENT_KINDS.PROCESS_GONE,
+      nativeType: "process.exited",
+      telemetry: "process",
+      metadata: { pid: 4242 },
+    });
+
+    const native = store.ingest({
+      eventId: "new-native-start",
+      harness: "claude",
+      nativeSessionId: "new-native-session",
+      kind: EVENT_KINDS.SESSION_STARTED,
+      nativeType: "SessionStart",
+      telemetry: "hook",
+      metadata: { pid: 4242, cwd: "/work/new" },
+    });
+
+    assert.equal(store.getSession(provisional.session.id).presence, "closed");
+    assert.equal(native.session.errorKind, null);
+    assert.equal(native.session.unread, false);
+    assert.equal(native.session.completionSeq, 0);
+    assert.equal(store.db.prepare("SELECT COUNT(*) AS count FROM sessions").get().count, 2);
+  } finally {
+    store.close();
+  }
+});
+
+test("a reused PID does not merge a live old process into a new native session", () => {
+  const store = new SwitchboardStore(":memory:");
+  try {
+    const oldProcess = store.ingest({
+      eventId: "old-live-process",
+      harness: "opencode",
+      nativeSessionId: "process-302-100",
+      kind: EVENT_KINDS.PROCESS_SEEN,
+      nativeType: "process.discovered",
+      occurredAt: 100_000,
+      telemetry: "process",
+      metadata: { pid: 302, startedAt: 90_000, cwd: "/work/reused" },
+    });
+    const newNative = store.ingest({
+      eventId: "new-native-process",
+      harness: "opencode",
+      nativeSessionId: "native-new-302",
+      kind: EVENT_KINDS.SESSION_STARTED,
+      nativeType: "session.created",
+      occurredAt: 200_000,
+      telemetry: "native",
+      metadata: { pid: 302, startedAt: 190_000, cwd: "/work/reused" },
+    });
+
+    assert.equal(store.getSession(oldProcess.session.id).presence, "live");
+    assert.equal(store.getSession(newNative.session.id).presence, "live");
+    assert.notEqual(newNative.session.id, oldProcess.session.id);
+    assert.equal(store.db.prepare("SELECT COUNT(*) AS count FROM sessions").get().count, 2);
+  } finally {
+    store.close();
+  }
+});
+
 test("all closed sessions obey the recent window and dismissal", () => {
   const store = new SwitchboardStore(":memory:");
   try {
@@ -226,7 +311,30 @@ test("terminal focus coordinates survive storage and decorate the session", () =
   }
 });
 
-test("an existing schema is upgraded with terminal focus columns", () => {
+test("application host coordinates survive storage and become the jump route", () => {
+  const store = new SwitchboardStore(":memory:");
+  try {
+    const result = store.ingest(
+      input("vscode-focus-start", EVENT_KINDS.SESSION_STARTED, {
+        metadata: {
+          cwd: "/work/vscode",
+          title: "VS Code Codex session",
+          hostApplication: "vscode",
+          hostPid: 7846,
+        },
+      }),
+    );
+
+    assert.equal(result.session.focusable, true);
+    assert.equal(result.session.focusProvider, "vscode");
+    assert.equal(store.getSnapshot().sessions[0].hostApplication, "vscode");
+    assert.equal(store.getSessionDetail(result.session.id).session.hostPid, 7846);
+  } finally {
+    store.close();
+  }
+});
+
+test("an existing schema is upgraded with terminal and application focus columns", () => {
   const directory = mkdtempSync(path.join(tmpdir(), "switchboard-migration-"));
   const databasePath = path.join(directory, "switchboard.sqlite");
   try {
@@ -238,6 +346,8 @@ test("an existing schema is upgraded with terminal focus columns", () => {
       ALTER TABLE sessions DROP COLUMN terminalInstance;
       ALTER TABLE sessions DROP COLUMN terminalTarget;
       ALTER TABLE sessions DROP COLUMN terminalKind;
+      ALTER TABLE sessions DROP COLUMN hostPid;
+      ALTER TABLE sessions DROP COLUMN hostApplication;
       UPDATE meta SET value = '1' WHERE key = 'schemaVersion';
     `);
     legacy.close();
@@ -248,7 +358,9 @@ test("an existing schema is upgraded with terminal focus columns", () => {
       assert.equal(columns.includes("terminalKind"), true);
       assert.equal(columns.includes("terminalTarget"), true);
       assert.equal(columns.includes("terminalInstance"), true);
-      assert.equal(upgraded.db.prepare("SELECT value FROM meta WHERE key = 'schemaVersion'").get().value, "2");
+      assert.equal(columns.includes("hostApplication"), true);
+      assert.equal(columns.includes("hostPid"), true);
+      assert.equal(upgraded.db.prepare("SELECT value FROM meta WHERE key = 'schemaVersion'").get().value, "3");
     } finally {
       upgraded.close();
     }

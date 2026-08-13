@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import http from "node:http";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import test from "node:test";
 import { createSwitchboardServer } from "../src/server.js";
 import { SwitchboardStore } from "../src/store.js";
@@ -67,6 +70,24 @@ test("the local API serves the GUI and protects writes with a bearer token", asy
   assert.equal(accepted.status, 202);
   assert.equal((await accepted.json()).accepted, 1);
 
+  const normalized = await fetch(`${baseUrl}/api/v1/events`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: "Bearer test-token" },
+    body: JSON.stringify({
+      ...body,
+      eventId: "api-normalized",
+      harness: "CODEX",
+      nativeSessionId: "normalized-session",
+      nativeType: `${"x".repeat(180)}\nprivate`,
+      confidence: "not-a-number",
+    }),
+  });
+  assert.equal(normalized.status, 202);
+  assert.equal((await normalized.json()).accepted, 1);
+  const adapterHealth = store.listAdapterHealth();
+  assert.deepEqual(adapterHealth.map((adapter) => adapter.adapter).sort(), ["codex", "opencode"]);
+  assert.equal(adapterHealth.find((adapter) => adapter.adapter === "codex").detail.length, 140);
+
   const demo = await fetch(`${baseUrl}/api/v1/events`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: "Bearer test-token" },
@@ -90,4 +111,31 @@ test("the local API serves the GUI and protects writes with a bearer token", asy
 
   const snapshot = await fetch(`${baseUrl}/api/v1/sessions`).then((response) => response.json());
   assert.equal(snapshot.sessions[0].primaryState, "idle");
+});
+
+test("GUI assets are read from disk for every request", async (context) => {
+  const directory = mkdtempSync(path.join(tmpdir(), "agent-switchboard-assets-"));
+  const file = path.join(directory, "mutable.txt");
+  writeFileSync(file, "first\n");
+  const store = new SwitchboardStore(":memory:");
+  const service = createSwitchboardServer({
+    store,
+    token: "test-token",
+    host: "127.0.0.1",
+    port: 0,
+    assets: new Map([["/mutable.txt", { type: "text/plain; charset=utf-8", file }]]),
+    logger: { error() {} },
+  });
+  await service.start();
+  context.after(async () => {
+    await service.stop();
+    store.close();
+    rmSync(directory, { recursive: true, force: true });
+  });
+
+  const address = service.server.address();
+  const url = `http://127.0.0.1:${address.port}/mutable.txt`;
+  assert.equal(await fetch(url).then((response) => response.text()), "first\n");
+  writeFileSync(file, "second\n");
+  assert.equal(await fetch(url).then((response) => response.text()), "second\n");
 });

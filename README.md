@@ -8,7 +8,8 @@ into an inbox.
 It includes:
 
 - a native Electron desktop pane with always-on-top, tray, and hide/show controls;
-- click-to-jump routing for tmux, WezTerm, kitty, Zellij, and GNOME Terminal sessions;
+- click-to-jump routing for VS Code-hosted Codex sessions, tmux, WezTerm,
+  kitty, Zellij, and GNOME Terminal;
 - an interactive terminal UI with a prominent harness column;
 - a local SQLite event store and Server-Sent Events stream;
 - native adapters for Codex, Claude Code, and OpenCode;
@@ -20,7 +21,8 @@ It includes:
 
 The current supported target is Linux. The daemon and TUI can run without a
 graphical desktop. The native desktop pane needs a graphical session, and exact
-jumping to ordinary GNOME Terminal windows or tabs requires GNOME Shell 42–44.
+jumping to ordinary GNOME Terminal tabs or existing VS Code windows requires
+the bundled connector on GNOME Shell 42–44.
 
 ### 1. Install the prerequisites
 
@@ -30,8 +32,8 @@ You need:
 - Node.js 22.5 or newer and its bundled `npm` command;
 - a supported coding harness—Codex, Claude Code, or OpenCode—already installed;
 - a graphical Linux desktop if you want the native desktop pane;
-- `gnome-shell` and `gnome-extensions` if you want the bundled GNOME Terminal
-  connector on GNOME 42–44.
+- `gnome-shell` and `gnome-extensions` if you want the bundled terminal and
+  application-window connector on GNOME 42–44.
 
 tmux, WezTerm, kitty, and Zellij are optional. Install only the terminal tools
 you actually use. Switchboard installs integrations for the harnesses but does
@@ -93,14 +95,14 @@ npm run setup
 
 Run setup from a terminal inside the logged-in graphical session when using
 GNOME. This gives the installer access to the correct desktop session and lets
-it detect, install, and enable the GNOME Terminal connector. Running setup over
+it detect, install, and enable the GNOME desktop connector. Running setup over
 SSH or from a headless shell still installs the harness integrations, but it may
 skip the GNOME connector and cannot open the desktop pane. You can run
 `npm run gnome:install` later from the GNOME desktop session.
 
 `setup` safely merges the Codex and Claude Code lifecycle hooks, installs the
 OpenCode event plugin, creates the application-menu launcher, installs the GNOME
-Terminal connector when a supported GNOME desktop is detected, runs the doctor,
+desktop connector when a supported GNOME desktop is detected, runs the doctor,
 and opens the desktop pane. It changes only the current user's files; it does
 not use `sudo`, install a system service, or edit shell startup files.
 
@@ -205,8 +207,11 @@ For convenient commands during development, run `npm link` once and then use
 
 Process discovery estimates state from non-content terminal status metadata and
 OpenCode lifecycle fields when available, then falls back to process activity
-counters. It never reads pane, message, tool, or transcript content. Hooks
-provide exact activity plus attention, unread, and error states. Run:
+counters. For Codex, it also reads only the bounded lifecycle records in the
+live rollout tail so a human interruption can override a stale terminal title;
+prompt, reasoning, tool, and assistant-content records are ignored and never
+persisted. Hooks provide exact activity plus attention, unread, and error
+states. Run:
 
 ```bash
 switchboardctl integrations
@@ -216,15 +221,28 @@ Queued or pending tools count as working. `NEEDS YOU` is reserved for an explici
 human-input signal such as a permission request, question, authentication step,
 or Codex's `Action Required` status.
 
+For Codex inside tmux, a pending approval is considered resolved after the pane
+has returned from `Action Required` to a working status for two consecutive
+discovery scans. This prevents an approved long-running command from remaining
+in `NEEDS YOU`; the rule never clears questions or clarification requests.
+
 OpenCode instances launched from an agent tool shell are treated as nested work
 and folded into their top-level parent instead of becoming additional rows. The
 integration forwards this ownership marker through detached tmux sessions
 without inspecting shell commands.
 
+Codex app-server processes launched by the official VS Code extension are
+identified from their extension executable and VS Code extension-host ancestry.
+They appear as **Codex · VS Code** rather than as an unknown terminal process.
+
 A reliable harness transition from `WORKING` to finished becomes `UNREAD` until
 you successfully jump to that session or mark it seen. Counter-only process
 sampling remains conservative: a process that merely goes quiet becomes `IDLE`,
 so long silent tools do not create false unread results.
+
+A turn explicitly stopped by the human becomes `INTERRUPTED`. It does not count
+as a successful completion, create an unread result, or require attention. The
+state remains visible until the next turn starts.
 
 Then merge the relevant template from [`integrations/`](./integrations/README.md)
 into each harness configuration. The hook bridge sends lifecycle metadata only;
@@ -288,10 +306,11 @@ Wayland backend does not support programmatic z-order changes. Set
 `SWITCHBOARD_NATIVE_WAYLAND=1` only if you prefer native Wayland over guaranteed
 always-on-top behavior.
 
-TUI keys are `↑`/`↓` or `j`/`k` to move, `Enter` to jump to the selected terminal
-pane, `i` to inspect without acknowledging, `m` to toggle read state, `d` to
+TUI keys are `↑`/`↓` or `j`/`k` to move, `Enter` to jump to the selected
+session, `i` to inspect without acknowledging, `m` to toggle read state, `d` to
 dismiss a closed session, `1`–`6` to filter, `r` to refresh, and `q` to quit.
-Every row identifies `CODEX`, `CLAUDE CODE`, or `OPENCODE` in a dedicated column.
+Every row identifies `CODEX`, `CLAUDE CODE`, or `OPENCODE` in a dedicated column;
+VS Code-hosted sessions add a compact `VS` host marker.
 The TUI starts on the `Active` view; recently closed sessions remain available
 under `Recent` instead of crowding the live-session list. Process-only discovery
 rows briefly show `OPEN` while the activity sampler establishes a baseline, then
@@ -301,8 +320,11 @@ states.
 
 ## Session jumping
 
-Switchboard records a structured terminal target alongside each live session:
+Switchboard records a structured application or terminal target alongside each live session:
 
+- VS Code: maps the Codex extension-host process to its existing editor window
+  and activates that window through the GNOME connector. If the exact window is
+  gone or cannot be mapped, it safely asks VS Code to open the recorded workspace;
 - tmux: selects the exact pane, focuses an existing attached client's terminal,
   and attaches through the current TUI terminal only as a fallback;
 - WezTerm: activates the exact pane through `wezterm cli` and preserves its GUI
@@ -312,6 +334,11 @@ Switchboard records a structured terminal target alongside each live session:
 - Zellij: opens a graphical terminal attached to the matching Zellij session.
 - GNOME Terminal: uses its inherited screen ID plus a small GNOME Shell
   extension to activate its Wayland window and select its tab.
+
+The VS Code route opens the correct existing editor window or workspace. The
+OpenAI extension does not expose a public external command for selecting one
+exact Codex conversation, so Switchboard does not claim to restore a particular
+thread when several threads share that editor window.
 
 GNOME Terminal deliberately does not expose a public “activate this existing
 screen” method. After installing the connector, Switchboard automatically
@@ -357,8 +384,9 @@ The display priority is deliberately stable:
 2. needs attention;
 3. unread completion;
 4. working;
-5. open/idle;
-6. recently closed.
+5. interrupted;
+6. open/idle;
+7. recently closed.
 
 The default Active queue contains live processes only. Once discovery confirms
 that a process exited, it leaves Active on the next scan (2.5 seconds by default),

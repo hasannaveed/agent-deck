@@ -23,6 +23,12 @@ const INTERFACE_XML = `
       <arg type="b" direction="out" name="ok"/>
       <arg type="s" direction="out" name="message"/>
     </method>
+    <method name="FocusApplicationWindow">
+      <arg type="u" direction="in" name="pid"/>
+      <arg type="s" direction="in" name="application"/>
+      <arg type="b" direction="out" name="ok"/>
+      <arg type="s" direction="out" name="message"/>
+    </method>
     <method name="RaiseSwitchboard">
       <arg type="b" direction="out" name="ok"/>
       <arg type="s" direction="out" name="message"/>
@@ -80,7 +86,7 @@ class SwitchboardBridge {
   }
 
   Ping() {
-    return "1";
+    return "2";
   }
 
   CaptureTerminal(service, screen, allowLast) {
@@ -171,6 +177,16 @@ class SwitchboardBridge {
     return [true, "Focused the linked GNOME Terminal tab."];
   }
 
+  FocusApplicationWindow(pid, application) {
+    if (!Number.isInteger(pid) || pid <= 1 || application !== "vscode") {
+      return [false, "This application session does not expose a valid window target."];
+    }
+    const window = this._findApplicationWindow(pid, application);
+    if (!window) return [false, "That VS Code window is no longer running."];
+    Main.activateWindow(window, global.get_current_time());
+    return [true, "Focused the existing VS Code window."];
+  }
+
   RaiseSwitchboard() {
     const window = this._findSwitchboardWindow();
     if (!window) return [false, "The Agent Switchboard window is not running."];
@@ -228,6 +244,24 @@ class SwitchboardBridge {
     for (const actor of global.get_window_actors()) {
       const window = actor.meta_window;
       if (window.get_title?.() === "Agent Switchboard") return window;
+    }
+    return null;
+  }
+
+  _findApplicationWindow(pid, application) {
+    for (const actor of global.get_window_actors()) {
+      const window = actor.meta_window;
+      if (window.get_pid?.() !== pid) continue;
+      const windowClass = [window.get_wm_class?.(), window.get_wm_class_instance?.()]
+        .filter(Boolean)
+        .join(" ");
+      const title = window.get_title?.() || "";
+      if (
+        application === "vscode" &&
+        (/(?:^|\s)code(?:\s|$)/i.test(windowClass) || /Visual Studio Code$/i.test(title))
+      ) {
+        return window;
+      }
     }
     return null;
   }

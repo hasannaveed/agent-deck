@@ -7,18 +7,18 @@ import { APP_NAME, APP_VERSION } from "./config.js";
 const MAX_BODY_BYTES = 256 * 1024;
 
 const ASSETS = new Map([
-  ["/", { type: "text/html; charset=utf-8", body: readFileSync(new URL("../web/index.html", import.meta.url)) }],
-  ["/index.html", { type: "text/html; charset=utf-8", body: readFileSync(new URL("../web/index.html", import.meta.url)) }],
-  ["/app.js", { type: "text/javascript; charset=utf-8", body: readFileSync(new URL("../web/app.js", import.meta.url)) }],
+  ["/", { type: "text/html; charset=utf-8", file: new URL("../web/index.html", import.meta.url) }],
+  ["/index.html", { type: "text/html; charset=utf-8", file: new URL("../web/index.html", import.meta.url) }],
+  ["/app.js", { type: "text/javascript; charset=utf-8", file: new URL("../web/app.js", import.meta.url) }],
   [
     "/session-navigation.js",
-    { type: "text/javascript; charset=utf-8", body: readFileSync(new URL("../web/session-navigation.js", import.meta.url)) },
+    { type: "text/javascript; charset=utf-8", file: new URL("../web/session-navigation.js", import.meta.url) },
   ],
-  ["/styles.css", { type: "text/css; charset=utf-8", body: readFileSync(new URL("../web/styles.css", import.meta.url)) }],
-  ["/favicon.svg", { type: "image/svg+xml", body: readFileSync(new URL("../web/favicon.svg", import.meta.url)) }],
+  ["/styles.css", { type: "text/css; charset=utf-8", file: new URL("../web/styles.css", import.meta.url) }],
+  ["/favicon.svg", { type: "image/svg+xml", file: new URL("../web/favicon.svg", import.meta.url) }],
   [
     "/manifest.webmanifest",
-    { type: "application/manifest+json", body: readFileSync(new URL("../web/manifest.webmanifest", import.meta.url)) },
+    { type: "application/manifest+json", file: new URL("../web/manifest.webmanifest", import.meta.url) },
   ],
 ]);
 
@@ -47,7 +47,7 @@ function sendAsset(response, asset) {
     "Content-Type": asset.type,
     "Cache-Control": "no-store",
   });
-  response.end(asset.body);
+  response.end(readFileSync(asset.file));
 }
 
 function tokensMatch(expected, received) {
@@ -119,6 +119,7 @@ export function createSwitchboardServer({
   recentHours = 24,
   maxRecent = 20,
   logger = console,
+  assets = ASSETS,
 }) {
   const startedAt = Date.now();
   const streams = new Set();
@@ -144,8 +145,8 @@ export function createSwitchboardServer({
       const url = new URL(request.url || "/", `http://${request.headers.host}`);
       const pathname = url.pathname;
 
-      if (request.method === "GET" && ASSETS.has(pathname)) {
-        sendAsset(response, ASSETS.get(pathname));
+      if (request.method === "GET" && assets.has(pathname)) {
+        sendAsset(response, assets.get(pathname));
         return;
       }
 
@@ -212,10 +213,10 @@ export function createSwitchboardServer({
         }
         const results = events.map((event) => {
           const result = store.ingest(event);
-          if (result.accepted && event?.harness) {
-            store.setAdapterHealth(event.harness, {
+          if (result.accepted && result.session) {
+            store.setAdapterHealth(result.session.harness, {
               status: "ready",
-              detail: `Last event: ${event.nativeType || event.kind || "unknown"}`,
+              detail: `Last event: ${result.session.lastEventType}`,
             });
           }
           return result;

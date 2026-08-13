@@ -7,10 +7,18 @@ export class SwitchboardClient {
     this.token = existsSync(config.tokenPath) ? readIngestToken(config) : null;
   }
 
+  refreshToken() {
+    this.token = existsSync(this.config.tokenPath) ? readIngestToken(this.config) : null;
+    return this.token;
+  }
+
   async request(path, { method = "GET", body, timeoutMs = 3500 } = {}) {
     const headers = { Accept: "application/json" };
     if (body !== undefined) headers["Content-Type"] = "application/json";
-    if (method !== "GET" && this.token) headers.Authorization = `Bearer ${this.token}`;
+    if (method !== "GET") {
+      const token = this.refreshToken();
+      if (token) headers.Authorization = `Bearer ${token}`;
+    }
     const response = await fetch(`${this.config.baseUrl}${path}`, {
       method,
       headers,
@@ -35,17 +43,17 @@ export class SwitchboardClient {
   }
 
   emit(events, { timeoutMs = 3500 } = {}) {
-    if (!this.token) throw new Error(`Ingest token not found at ${this.config.tokenPath}; start switchboardd first`);
+    if (!this.refreshToken()) throw new Error(`Ingest token not found at ${this.config.tokenPath}; start switchboardd first`);
     return this.request("/api/v1/events", { method: "POST", body: events, timeoutMs });
   }
 
   clearDemoData() {
-    if (!this.token) throw new Error(`Ingest token not found at ${this.config.tokenPath}; start switchboardd first`);
+    if (!this.refreshToken()) throw new Error(`Ingest token not found at ${this.config.tokenPath}; start switchboardd first`);
     return this.request("/api/v1/demo/clear", { method: "POST", body: {} });
   }
 
   action(id, action) {
-    if (!this.token) throw new Error(`Ingest token not found at ${this.config.tokenPath}; start switchboardd first`);
+    if (!this.refreshToken()) throw new Error(`Ingest token not found at ${this.config.tokenPath}; start switchboardd first`);
     return this.request(`/api/v1/sessions/${encodeURIComponent(id)}/${action}`, { method: "POST", body: {} });
   }
 }

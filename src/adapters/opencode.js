@@ -27,10 +27,14 @@ export function translateOpenCodeEvent(raw, context = {}) {
     });
   } else if (type === "session.error") {
     const errorType = payload?.error?.name || payload?.error?.type || "opencode_error";
-    add({
-      kind: EVENT_KINDS.SESSION_ERROR,
-      error: { kind: errorType, summary: "OpenCode reported a session error" },
-    });
+    if (String(errorType).toLowerCase() === "messageabortederror") {
+      add({ kind: EVENT_KINDS.WORK_INTERRUPTED });
+    } else {
+      add({
+        kind: EVENT_KINDS.SESSION_ERROR,
+        error: { kind: errorType, summary: "OpenCode reported a session error" },
+      });
+    }
   } else if (["permission.asked", "permission.updated", "permission.v2.asked"].includes(type)) {
     add({
       kind: EVENT_KINDS.ATTENTION_REQUESTED,

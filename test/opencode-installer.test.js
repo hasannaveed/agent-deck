@@ -90,9 +90,27 @@ test("installed OpenCode plugin delivers explicit prompt lifecycle events", asyn
     const pluginModule = await import(`data:text/javascript;base64,${Buffer.from(pluginSource).toString("base64")}`);
     const pendingPermissions = [];
     const pendingQuestions = [];
+    const pendingV2Permissions = [];
+    const pendingV2Questions = [];
+    let failV2PermissionList = false;
+    let v2PermissionListCalls = 0;
     const client = {
       permission: { list: async () => ({ data: [...pendingPermissions] }) },
       question: { list: async () => ({ data: [...pendingQuestions] }) },
+      v2: {
+        permission: {
+          request: {
+            list: async () => {
+              v2PermissionListCalls += 1;
+              if (failV2PermissionList) throw new Error("temporary v2 permission failure");
+              return { data: [...pendingV2Permissions] };
+            },
+          },
+        },
+        question: {
+          request: { list: async () => ({ data: [...pendingV2Questions] }) },
+        },
+      },
     };
     hooks = await pluginModule.AgentSwitchboard({ client, directory: ROOT });
     const shellEnvironment = { env: {} };
@@ -108,6 +126,30 @@ test("installed OpenCode plugin delivers explicit prompt lifecycle events", asyn
     });
     const attention = await waitForSession(runtime, "plugin-e2e", "needs_attention");
     assert.equal(attention.attentionRequestId, "permission-e2e");
+
+    await hooks.event({
+      event: {
+        id: "event-abort-working",
+        type: "session.status",
+        properties: { sessionID: "plugin-aborted", status: { type: "busy" } },
+      },
+    });
+    await hooks.event({
+      event: {
+        id: "event-aborted",
+        type: "session.error",
+        properties: { sessionID: "plugin-aborted", error: { name: "MessageAbortedError" } },
+      },
+    });
+    await hooks.event({
+      event: {
+        id: "event-aborted-idle",
+        type: "session.idle",
+        properties: { sessionID: "plugin-aborted" },
+      },
+    });
+    const aborted = await waitForSession(runtime, "plugin-aborted", "interrupted");
+    assert.equal(aborted.unread, false);
 
     await hooks.event({
       event: {
@@ -152,16 +194,63 @@ test("installed OpenCode plugin delivers explicit prompt lifecycle events", asyn
     );
     assert.equal(recoveredQuestion.attentionRequestId, "question-preference");
 
-    const recoveredDetails = [recoveredPermission, recoveredQuestion].map((session) =>
-      JSON.stringify(runtime.store.getSessionDetail(session.id)),
+    pendingV2Permissions.push({
+      id: "permission-v2-only",
+      sessionID: "plugin-recovered-v2-permission",
+      action: "external_directory",
+      resources: ["/home/example/.local/share/private/*"],
+    });
+    const recoveredV2Permission = await waitForSession(
+      runtime,
+      "plugin-recovered-v2-permission",
+      "needs_attention",
     );
+    assert.equal(recoveredV2Permission.attentionRequestId, "permission-v2-only");
+
+    const callsBeforeFailure = v2PermissionListCalls;
+    failV2PermissionList = true;
+    pendingV2Permissions.length = 0;
+    await waitForCondition(
+      () => v2PermissionListCalls > callsBeforeFailure,
+      "the failing v2 permission poll to run",
+    );
+    assert.equal(
+      runtime.store.getSnapshot().sessions.find((item) => item.id === recoveredV2Permission.id)?.primaryState,
+      "needs_attention",
+    );
+    failV2PermissionList = false;
+    await waitForSession(runtime, "plugin-recovered-v2-permission", "working");
+
+    pendingV2Questions.push({
+      id: "question-v2-only",
+      sessionID: "plugin-recovered-v2-question",
+      questions: [{ header: "Preference", question: "Choose a private v2 option" }],
+    });
+    const recoveredV2Question = await waitForSession(
+      runtime,
+      "plugin-recovered-v2-question",
+      "needs_attention",
+    );
+    assert.equal(recoveredV2Question.attentionRequestId, "question-v2-only");
+
+    const recoveredDetails = [
+      recoveredPermission,
+      recoveredQuestion,
+      recoveredV2Permission,
+      recoveredV2Question,
+    ].map((session) => JSON.stringify(runtime.store.getSessionDetail(session.id)));
     assert.equal(recoveredDetails.some((detailValue) => detailValue.includes("systemd/user")), false);
+    assert.equal(recoveredDetails.some((detailValue) => detailValue.includes(".local/share/private")), false);
     assert.equal(recoveredDetails.some((detailValue) => detailValue.includes("Private choice")), false);
+    assert.equal(recoveredDetails.some((detailValue) => detailValue.includes("private v2 option")), false);
 
     pendingPermissions.length = 0;
     pendingQuestions.length = 0;
+    pendingV2Questions.length = 0;
     await waitForSession(runtime, "plugin-recovered-permission", "working");
     await waitForSession(runtime, "plugin-recovered-question", "working");
+    await waitForSession(runtime, "plugin-recovered-v2-permission", "working");
+    await waitForSession(runtime, "plugin-recovered-v2-question", "working");
 
     process.env.AGENT_SWITCHBOARD_CHILD = "1";
     nestedHooks = await pluginModule.AgentSwitchboard({ client: {}, directory: ROOT });
@@ -203,6 +292,15 @@ async function waitForSession(runtime, nativeSessionId, primaryState) {
   assert.fail(
     `Timed out waiting for ${nativeSessionId} to become ${primaryState}: ${JSON.stringify(runtime.store.getSnapshot())}`,
   );
+}
+
+async function waitForCondition(predicate, description) {
+  const deadline = Date.now() + 3000;
+  while (Date.now() < deadline) {
+    if (predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  assert.fail(`Timed out waiting for ${description}`);
 }
 
 function restoreEnvironment(name, value) {

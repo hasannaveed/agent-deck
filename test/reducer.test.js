@@ -76,11 +76,42 @@ test("native busy updates do not clear an explicit human-input request", () => {
   assert.equal(decorateSession(session).primaryState, "working");
 });
 
+test("an interrupted turn stops working without creating an unread result", () => {
+  let session = reduceSession(null, event(EVENT_KINDS.SESSION_STARTED));
+  session = reduceSession(session, event(EVENT_KINDS.WORK_STARTED, { humanInitiated: true }));
+  session = reduceSession(
+    session,
+    event(EVENT_KINDS.WORK_INTERRUPTED, { nativeType: "codex.rollout.turn_aborted" }),
+  );
+
+  assert.equal(session.activity, "interrupted");
+  assert.equal(session.unread, false);
+  assert.equal(session.completionSeq, 0);
+  assert.equal(decorateSession(session).primaryState, "interrupted");
+  assert.equal(decorateSession(session).group, "open");
+
+  session = reduceSession(session, event(EVENT_KINDS.ACTIVITY_IDLE));
+  assert.equal(decorateSession(session).primaryState, "interrupted");
+
+  session = reduceSession(
+    session,
+    event(EVENT_KINDS.WORK_COMPLETED, {
+      completion: { outcome: "completed", summary: "Cleanup idle" },
+    }),
+  );
+  assert.equal(decorateSession(session).primaryState, "interrupted");
+  assert.equal(session.completionSeq, 0);
+
+  session = reduceSession(session, event(EVENT_KINDS.WORK_STARTED, { humanInitiated: true }));
+  assert.equal(decorateSession(session).primaryState, "working");
+});
+
 test("errors outrank attention, unread, and working", () => {
   const base = reduceSession(null, event(EVENT_KINDS.SESSION_STARTED));
   const sessions = [
     { ...base, id: "idle", nativeSessionId: "idle", activity: "idle" },
     { ...base, id: "working", nativeSessionId: "working", activity: "working" },
+    { ...base, id: "interrupted", nativeSessionId: "interrupted", activity: "interrupted" },
     { ...base, id: "unread", nativeSessionId: "unread", unread: true },
     { ...base, id: "attention", nativeSessionId: "attention", attention: "required" },
     { ...base, id: "error", nativeSessionId: "error", errorKind: "connection" },
@@ -88,7 +119,7 @@ test("errors outrank attention, unread, and working", () => {
 
   assert.deepEqual(
     sortSessions(sessions).map((session) => session.id),
-    ["error", "attention", "unread", "working", "idle"],
+    ["error", "attention", "unread", "working", "interrupted", "idle"],
   );
 });
 
@@ -131,4 +162,28 @@ test("only live sessions with a supported terminal target are focusable", () => 
     }).focusable,
     true,
   );
+});
+
+test("event normalization keeps invalid confidence and numeric timestamps safe", () => {
+  const occurredAt = Date.now() - 5_000;
+  const malformed = normalizeEvent({
+    harness: "codex",
+    nativeSessionId: "normalization-safety",
+    kind: EVENT_KINDS.SESSION_STARTED,
+    confidence: "not-a-number",
+    occurredAt: String(occurredAt),
+  });
+  assert.equal(malformed.confidence, 1);
+  assert.equal(malformed.occurredAt, occurredAt);
+
+  const process = normalizeEvent({
+    harness: "codex",
+    nativeSessionId: "normalization-process",
+    kind: EVENT_KINDS.PROCESS_SEEN,
+    telemetry: "process",
+    confidence: Number.NaN,
+  });
+  assert.equal(process.confidence, 0.45);
+  assert.equal(normalizeEvent({ ...process, eventId: "clamped-high", confidence: 4 }).confidence, 1);
+  assert.equal(normalizeEvent({ ...process, eventId: "clamped-low", confidence: -2 }).confidence, 0);
 });

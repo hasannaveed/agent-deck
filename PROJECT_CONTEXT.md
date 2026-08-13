@@ -64,7 +64,7 @@ Linux /proc discovery --------+
                          /             \
                        TUI       Electron desktop
 
-terminal coordinates --> validated focus providers --> existing terminal target
+app/terminal coordinates --> validated focus providers --> existing window or pane
 ```
 
 The dependency flow should stay in this direction:
@@ -75,7 +75,7 @@ The dependency flow should stay in this direction:
 - SQLite persists events, sessions, attention records, and client read state.
 - The HTTP server exposes a local read/write API and an SSE stream.
 - The TUI and Electron renderer consume the same daemon state.
-- Focus providers activate structured terminal targets.
+- Focus providers activate structured application and terminal targets.
 
 The default daemon address is `127.0.0.1:43117`. Runtime state is stored below `$XDG_STATE_HOME/agent-switchboard`, or `~/.local/state/agent-switchboard` when `XDG_STATE_HOME` is unset.
 
@@ -86,7 +86,7 @@ Node.js 22.5 or newer is required because the project uses the built-in `node:sq
 Session state is composed from independent dimensions rather than stored as one mutable label:
 
 - **Presence:** live or closed
-- **Activity:** working, idle, or unknown
+- **Activity:** working, interrupted, idle, or unknown
 - **Attention:** required or none
 - **Unread:** completion sequence newer than the client's seen sequence
 - **Error:** current terminal/session error
@@ -94,7 +94,7 @@ Session state is composed from independent dimensions rather than stored as one 
 The displayed primary state follows this precedence:
 
 ```text
-error > needs_attention > working > unread > idle > unknown/open > recent
+error > needs_attention > working > interrupted > unread > idle > unknown/open > recent
 ```
 
 That precedence is intentional. For example, a session can have an unread result and then begin working again; its primary state is **Working** until it stops.
@@ -104,6 +104,7 @@ That precedence is intentional. For example, a session can have an unread result
 | Error | The session has a current failure | Explicit harness error or validated runtime failure |
 | Needs you | Progress is blocked on the human | Permission, question, login/authentication, clarification, or explicit input request |
 | Working | The agent is actively doing work | Native busy/turn/tool activity or sufficiently strong process activity evidence |
+| Interrupted | The human stopped the active turn | Explicit harness abort/cancel lifecycle signal; never a completion or unread result |
 | Unread | Work completed and its result has not been seen | A reliable completion event increments the completion sequence |
 | Idle | The live session is open but not working | Native idle signal or a quiet foreground process after the activity timeout |
 | Open | The process is live but activity is not yet known | Presence without enough activity evidence |
@@ -115,6 +116,7 @@ Important transition rules:
 - An explicit attention request remains active until it is explicitly resolved. Generic busy traffic must not erase it.
 - Human-initiated new work may resolve an old attention request when the harness semantics make that safe.
 - Completion increments `completionSeq`; each client records its own `seenSeq`.
+- Interruption clears Working without incrementing `completionSeq`; the next turn clears Interrupted.
 - A successful jump marks the session seen. Merely selecting, inspecting, or unsuccessfully jumping does not.
 - A quiet process becomes Idle after the configured idle interval; quietness must not synthesize Unread.
 - A closed session leaves Active as soon as its end is known. Process-discovered exits are normally detected on the next discovery scan.
@@ -195,13 +197,18 @@ Process discovery is fallback and reconciliation, not a substitute for native li
 The discovery loop:
 
 - Examines `/proc` for exact supported executable signatures.
-- Requires a relevant foreground process group and controlling terminal.
+- Requires a relevant foreground process group and controlling terminal, except
+  for the explicitly identified Codex app server owned by the VS Code extension.
 - Rejects child/helper, background, suspended, and headless service processes.
 - Samples CPU and I/O counters to infer activity without reading terminal content.
 - Uses safe non-content hints, such as Codex tmux pane state and OpenCode lifecycle/tool-state metadata, where available.
 - Emits process-seen, process-gone, work, and idle evidence into the same reducer path as native events.
+- Records VS Code as an application host separately from terminal metadata. The
+  extension-host PID is used to map one app server to its existing editor window;
+  native Codex thread IDs and workspaces remain authoritative.
+- For a hook-confirmed Codex approval in tmux only, two consecutive working-title scans resolve the approval; `Action Required`, a non-working scan, a new approval, or any non-approval attention resets or disables this evidence.
 
-Counter activity may mean Working. Counter quietness may mean Idle. It must never mean Needs you or Unread.
+Counter activity may mean Working. Counter quietness may mean Idle. It must never mean Needs you, Interrupted, or Unread. Codex interruption is detected from the explicit `turn_aborted` lifecycle record in a bounded rollout tail; content-bearing records are ignored and never persisted.
 
 ## TUI behavior
 
@@ -258,7 +265,18 @@ The desktop launcher filters Chromium's exact `GetVSyncParametersIfAvailable()` 
 
 ## Terminal jumping and focus providers
 
-Every focusable session stores a structured terminal target. Focus providers validate all coordinates and arguments before performing an action. No focus path may construct an arbitrary shell command from event data.
+Every focusable session stores a structured application or terminal target. Focus providers validate all coordinates and arguments before performing an action. No focus path may construct an arbitrary shell command from event data.
+
+### VS Code
+
+The official Codex extension is recognized by its `openai.chatgpt-*` executable,
+code-mode app-server arguments, and VS Code extension-host ancestry. The daemon
+stores `hostApplication: vscode` and the extension-host PID independently from
+`terminalKind`. At jump time, `code --status` maps that host to the matching
+editor-window PID and the GNOME bridge activates only a validated VS Code window.
+If exact activation is unavailable, `code <cwd>` opens the recorded workspace
+without shell interpolation. Exact selection of an individual Codex thread is
+not available through the upstream extension's public interface.
 
 ### tmux
 
@@ -296,7 +314,7 @@ Wayland intentionally prevents arbitrary applications from reliably raising unre
 
 The service binds to loopback by default. Mutating API requests require a generated 256-bit bearer token. The server also applies host restrictions and a content security policy.
 
-The event payload schema is deliberately metadata-only. Safe fields include identifiers, harness, timestamps, workspace, project/branch metadata, process identity, terminal coordinates, and coarse lifecycle state. Unsafe fields include prompts, responses, terminal output, commands, tool arguments/results, questions, answers, permission paths/patterns, and model content.
+The event payload schema is deliberately metadata-only. Safe fields include identifiers, harness, timestamps, workspace, project/branch metadata, process identity, validated application-host or terminal coordinates, and coarse lifecycle state. Unsafe fields include prompts, responses, terminal output, commands, tool arguments/results, questions, answers, permission paths/patterns, and model content.
 
 Focus targets are treated as untrusted input even though the service is local. Providers must validate identifiers and invoke subprocesses with argument arrays, never shell interpolation.
 
@@ -461,4 +479,4 @@ When continuing this project in a fresh coding-agent session:
 7. Prefer a central detection/state/focus fix over duplicated TUI and GUI workarounds.
 8. Update this document when a substantial architectural decision, supported harness, state rule, focus strategy, setup behavior, or known constraint changes.
 
-The concise mental model is: **metadata-only harness events plus conservative process fallback feed one deterministic daemon; two clean clients show active work and jump to validated existing terminal targets.**
+The concise mental model is: **metadata-only harness events plus conservative process fallback feed one deterministic daemon; two clean clients show active work and jump to validated existing application or terminal targets.**

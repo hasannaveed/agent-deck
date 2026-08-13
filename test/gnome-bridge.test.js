@@ -2,10 +2,13 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   captureGnomeTerminal,
+  focusGnomeApplicationWindow,
   parseGnomeBridgeReply,
   raiseGnomeSwitchboard,
+  validGnomeApplication,
   validGnomeTerminalScreen,
   validGnomeTerminalService,
+  validGnomeWindowPid,
 } from "../src/gnome-bridge.js";
 
 const terminal = {
@@ -19,6 +22,10 @@ test("GNOME bridge targets and replies are strictly validated", () => {
   assert.equal(validGnomeTerminalService("org.gnome.Terminal"), null);
   assert.equal(validGnomeTerminalScreen(terminal.terminalTarget), terminal.terminalTarget);
   assert.equal(validGnomeTerminalScreen("/org/gnome/Terminal/screen/../../bad"), null);
+  assert.equal(validGnomeApplication("vscode"), "vscode");
+  assert.equal(validGnomeApplication("$(touch nope)"), null);
+  assert.equal(validGnomeWindowPid(7549), 7549);
+  assert.equal(validGnomeWindowPid("not-a-pid"), null);
   assert.deepEqual(parseGnomeBridgeReply("(true, 'Linked this tab.')\n"), {
     ok: true,
     message: "Linked this tab.",
@@ -28,6 +35,30 @@ test("GNOME bridge targets and replies are strictly validated", () => {
     message: "Link it again.",
   });
   assert.equal(parseGnomeBridgeReply("not a tuple"), null);
+});
+
+test("the GNOME bridge focuses only a validated application window", async () => {
+  const calls = [];
+  const result = await focusGnomeApplicationWindow(
+    { application: "vscode", pid: 7549 },
+    {
+      which: (name) => (name === "gdbus" ? "/usr/bin/gdbus" : null),
+      run: async (file, args) => {
+        calls.push([file, args]);
+        return { stdout: "(true, 'Focused the existing VS Code window.')\n", stderr: "" };
+      },
+    },
+  );
+
+  assert.deepEqual(result, {
+    ok: true,
+    message: "Focused the existing VS Code window.",
+  });
+  assert.deepEqual(calls[0][1].slice(-3), [
+    "com.skylabs.AgentSwitchboard.GnomeBridge1.FocusApplicationWindow",
+    "7549",
+    "vscode",
+  ]);
 });
 
 test("explicit GNOME linking may use the last focused terminal without shell interpolation", async () => {

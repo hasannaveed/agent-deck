@@ -295,47 +295,56 @@ async function collectPendingPrompts(client, directory) {
     ["permission", []],
     ["question", []]
   ]);
-  const add = (kind, invoke) => {
-    endpoints.get(kind).push(invoke);
+  const add = (kind, source, invoke) => {
+    endpoints.get(kind).push({ source, invoke });
   };
 
   if (typeof client?.permission?.list === "function") {
-    add("permission", () => client.permission.list({ directory }));
+    add("permission", "legacy-permission", () => client.permission.list({ directory }));
   }
   if (typeof client?.question?.list === "function") {
-    add("question", () => client.question.list({ directory }));
+    add("question", "legacy-question", () => client.question.list({ directory }));
   }
   if (typeof client?.v2?.permission?.request?.list === "function") {
-    add("permission", () => client.v2.permission.request.list({ location: { directory } }));
+    add("permission", "v2-permission", () =>
+      client.v2.permission.request.list({ location: { directory } })
+    );
   }
   if (typeof client?.v2?.question?.request?.list === "function") {
-    add("question", () => client.v2.question.request.list({ location: { directory } }));
+    add("question", "v2-question", () =>
+      client.v2.question.request.list({ location: { directory } })
+    );
   }
 
   const results = await Promise.all(
-    [...endpoints].map(async ([kind, candidates]) => {
-      for (const invoke of candidates) {
+    [...endpoints].flatMap(([kind, candidates]) =>
+      candidates.map(async ({ source, invoke }) => {
         try {
-          return { kind, response: await invoke() };
+          return { kind, source, response: await invoke() };
         } catch {
-          // Try the API shape used by another supported OpenCode version.
+          // Another supported API generation may still provide this prompt kind.
+          return null;
         }
-      }
-      return null;
-    })
+      })
+    )
   );
   const pending = new Map();
-  const successfulKinds = new Set();
+  const successfulSources = new Set();
   for (const result of results) {
     if (!result) continue;
-    successfulKinds.add(result.kind);
+    successfulSources.add(result.source);
     for (const value of pendingRequests(result.response)) {
       const request = pendingRequest(value, result.kind);
       if (!request) continue;
-      pending.set(`${request.kind}:${request.sessionID}:${request.id}`, request);
+      const key = `${request.kind}:${request.sessionID}:${request.id}`;
+      const existing = pending.get(key);
+      pending.set(key, {
+        ...request,
+        sources: new Set([...(existing?.sources || []), result.source])
+      });
     }
   }
-  return successfulKinds.size ? { pending, successfulKinds } : null;
+  return successfulSources.size ? { pending, successfulSources } : null;
 }
 
 function samePendingPrompts(left, right) {
@@ -361,13 +370,16 @@ function createPromptReconciler(client, directory, forward) {
       const result = await collectPendingPrompts(client, directory);
       if (disposed || result === null) return;
       const current = new Map(
-        [...known].filter(([, request]) => !result.successfulKinds.has(request.kind))
+        [...known].filter(([, request]) =>
+          ![...request.sources].every((source) => result.successfulSources.has(source))
+        )
       );
       for (const [key, request] of result.pending) current.set(key, request);
-      if (samePendingPrompts(known, current)) return;
-      generation += 1;
+      const changed = !samePendingPrompts(known, current);
       const previous = known;
       known = current;
+      if (!changed) return;
+      generation += 1;
 
       // Resolve disappeared requests first, then re-assert every request that
       // remains. This preserves NEEDS YOU when one of several prompts closes.
@@ -411,6 +423,7 @@ export const AgentSwitchboard = async ({ client, directory }) => {
   const prompts = nestedHarness
     ? null
     : createPromptReconciler(client, directory, bridge.forward);
+  const interruptedSessions = new Set();
   let promptPoll = null;
   if (prompts) {
     void prompts.reconcile();
@@ -425,6 +438,34 @@ export const AgentSwitchboard = async ({ client, directory }) => {
     event: async ({ event }) => {
       if (nestedHarness) return;
       if (!trackedEvents.has(event.type)) return;
+      const properties = {
+        ...(event.data && typeof event.data === "object" ? event.data : {}),
+        ...(event.properties && typeof event.properties === "object" ? event.properties : {})
+      };
+      const sessionID =
+        stringValue(properties.sessionID) || stringValue(properties.info?.id);
+      const status = stringValue(properties.status?.type);
+      const errorName =
+        stringValue(properties.error?.name) || stringValue(properties.error?.type);
+
+      if (sessionID && event.type === "session.error" && errorName === "MessageAbortedError") {
+        interruptedSessions.add(sessionID);
+      } else if (sessionID && event.type === "session.status" && ["busy", "retry"].includes(status)) {
+        interruptedSessions.delete(sessionID);
+      } else if (sessionID && event.type === "session.deleted") {
+        interruptedSessions.delete(sessionID);
+      }
+
+      // OpenCode can follow MessageAbortedError with ordinary idle events.
+      // Suppress those cleanup signals so they do not turn an interruption
+      // into a successful completion and fabricate an unread result.
+      if (
+        sessionID &&
+        interruptedSessions.has(sessionID) &&
+        (event.type === "session.idle" || (event.type === "session.status" && status === "idle"))
+      ) {
+        return;
+      }
       bridge.forward(event);
       if (promptAskedEvents.has(event.type) || promptResolvedEvents.has(event.type)) {
         void prompts.reconcile();

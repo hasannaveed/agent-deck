@@ -1,7 +1,7 @@
 # Native harness integrations
 
 Switchboard discovers live processes without configuration, but native hooks are
-what make `working`, `needs attention`, `unread`, and `error` exact.
+what make `working`, `interrupted`, `needs attention`, `unread`, and `error` exact.
 
 These templates only send lifecycle metadata to the local daemon. The bridge
 does not forward prompts, assistant responses, tool input, command text, or
@@ -74,7 +74,7 @@ text is inspected or stored.
 
 Restart already-running harness sessions after changing integration files.
 
-## GNOME Terminal on Wayland
+## GNOME desktop switching on Wayland
 
 GNOME Terminal supplies a stable screen object path to child processes, but it
 does not expose a public method that raises that existing screen. Install the
@@ -88,6 +88,9 @@ New Codex, Claude Code, and OpenCode processes are linked automatically while
 their launch tab is focused. This includes the host GNOME Terminal tab for an
 attached tmux client. Native `SessionStart` and user-prompt events also refresh
 the route at safe foreground moments. Background events never change a route.
+The same connector validates and activates an existing VS Code editor window
+for a Codex extension-host process. No manual link is needed for VS Code; when
+an exact window cannot be recovered, Switchboard opens the recorded workspace.
 When the desktop pane is pinned, the connector also makes it sticky and raises
 it above the terminal after a jump without taking keyboard focus from the agent.
 

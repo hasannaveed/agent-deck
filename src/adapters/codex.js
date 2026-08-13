@@ -9,6 +9,11 @@ function requestKind(type, raw) {
   return tool.includes("request_user_input") || tool.includes("askuser") ? "question" : "approval";
 }
 
+function interruptedTurn(turn) {
+  const status = String(turn?.status?.type || turn?.status || turn?.reason || "").toLowerCase();
+  return ["aborted", "cancelled", "canceled", "interrupted"].includes(status);
+}
+
 export function translateCodexEvent(raw, context = {}) {
   const type = eventType(raw);
   const payload = eventPayload(raw);
@@ -56,10 +61,14 @@ export function translateCodexEvent(raw, context = {}) {
     }
   } else if (type === "PostToolUse" || type === "serverRequest/resolved") {
     add({ kind: EVENT_KINDS.ATTENTION_RESOLVED });
+  } else if (["turn/aborted", "turn_aborted", "TurnAborted"].includes(type)) {
+    add({ kind: EVENT_KINDS.WORK_INTERRUPTED });
   } else if (type === "Stop" || type === "turn/completed") {
     const turn = payload?.turn || payload;
     const failed = turn?.status === "failed" || Boolean(turn?.error);
-    if (failed) {
+    if (interruptedTurn(turn)) {
+      add({ kind: EVENT_KINDS.WORK_INTERRUPTED });
+    } else if (failed) {
       add({
         kind: EVENT_KINDS.SESSION_ERROR,
         error: {

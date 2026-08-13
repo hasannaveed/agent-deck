@@ -4,6 +4,7 @@ const STATE_LABELS = {
   error: "Error",
   needs_attention: "Needs you",
   working: "Working",
+  interrupted: "Interrupted",
   unread: "Unread",
   idle: "Idle",
   unknown: "Open",
@@ -20,6 +21,10 @@ const HARNESS_MARKS = {
   codex: "CX",
   claude: "CC",
   opencode: "OC",
+};
+
+const HOST_LABELS = {
+  vscode: "VS Code",
 };
 
 const FILTER_LABELS = {
@@ -100,6 +105,7 @@ function statusMessage(session) {
   if (session.primaryState === "error") return session.errorSummary || "The session stopped with an error.";
   if (session.primaryState === "needs_attention") return session.attentionSummary || "Human input is required.";
   if (session.primaryState === "working") return "The agent is actively working.";
+  if (session.primaryState === "interrupted") return "The turn was stopped by the human.";
   if (session.primaryState === "unread") return "The latest result has not been opened.";
   if (session.primaryState === "idle") return "The session is open and waiting.";
   if (session.primaryState === "unknown") {
@@ -176,7 +182,7 @@ function buildSessionRow(session) {
   open.dataset.sessionId = session.id;
   open.setAttribute(
     "aria-label",
-    `${canJump ? "Open" : "Inspect"} ${session.title}, ${HARNESS_LABELS[session.harness] || session.harness}, ${STATE_LABELS[session.primaryState]}`,
+    `${canJump ? "Open" : "Inspect"} ${session.title}, ${HARNESS_LABELS[session.harness] || session.harness}${session.hostApplication ? ` in ${HOST_LABELS[session.hostApplication] || session.hostApplication}` : ""}, ${STATE_LABELS[session.primaryState]}`,
   );
   open.append(harnessMark(session, "row-harness-mark"));
 
@@ -186,6 +192,16 @@ function buildSessionRow(session) {
   const harness = node("span", "session-harness", HARNESS_LABELS[session.harness] || session.harness);
   harness.dataset.harness = session.harness;
   meta.append(harness);
+  if (session.hostApplication) {
+    meta.append(node("span", "session-meta-separator", "·"));
+    meta.append(
+      node(
+        "span",
+        "session-host",
+        HOST_LABELS[session.hostApplication] || session.hostApplication,
+      ),
+    );
+  }
   meta.append(node("span", "session-meta-separator", "·"));
   meta.append(relativeTimeNode("session-age", session.lastEventAt || session.updatedAt));
   copy.append(meta);
@@ -212,8 +228,19 @@ function buildSessionRow(session) {
 }
 
 function renderSessions() {
+  const focusedRow = document.activeElement?.closest?.(".session-row");
+  const focusedSessionId = focusedRow?.dataset.sessionId || null;
+  const focusedControl = document.activeElement?.classList.contains("inspect-session")
+    ? ".inspect-session"
+    : ".session-open";
   const sessions = filteredSessions();
   elements.groups.replaceChildren(...sessions.map(buildSessionRow));
+  if (focusedSessionId) {
+    const replacement = elements.groups.querySelector(
+      `.session-row[data-session-id="${CSS.escape(focusedSessionId)}"] ${focusedControl}`,
+    );
+    replacement?.focus({ preventScroll: true });
+  }
   elements.empty.hidden = sessions.length > 0;
   elements.queueTitle.textContent = state.query.trim() ? "Search results" : FILTER_LABELS[state.filter];
   elements.queueCount.textContent = String(sessions.length);
@@ -329,6 +356,7 @@ function renderDetail() {
   const metadata = disclosure("Session details");
   const grid = node("dl", "metadata-grid");
   grid.append(detailField("Harness", HARNESS_LABELS[session.harness] || session.harness));
+  grid.append(detailField("Host", HOST_LABELS[session.hostApplication] || session.hostApplication));
   grid.append(detailField("Project", session.project));
   grid.append(detailField("Branch", session.branch));
   grid.append(detailField("Terminal", session.terminal));
@@ -368,10 +396,11 @@ function renderHeader() {
   const counts = state.snapshot.counts || {};
   const liveSessions = state.snapshot.sessions.filter((session) => session.presence === "live");
   const working = liveSessions.filter((session) => session.primaryState === "working").length;
+  const interrupted = liveSessions.filter((session) => session.primaryState === "interrupted").length;
   const attention = liveSessions.filter((session) => session.primaryState === "needs_attention").length;
   const unread = liveSessions.filter((session) => session.primaryState === "unread").length;
   const errors = liveSessions.filter((session) => session.primaryState === "error").length;
-  const open = liveSessions.filter((session) => ["idle", "unknown"].includes(session.primaryState)).length;
+  const open = liveSessions.filter((session) => ["interrupted", "idle", "unknown"].includes(session.primaryState)).length;
   const railParts = [
     [elements.railError, errors],
     [elements.railAttention, attention],
@@ -393,12 +422,15 @@ function renderHeader() {
         ? "unread"
         : working
           ? "working"
-          : "idle";
+          : interrupted
+            ? "interrupted"
+            : "idle";
   const dockStateLabel = {
     error: "error",
     needs_attention: "needs your input",
     unread: "unread result",
     working: "working",
+    interrupted: "interrupted",
     idle: "open",
   }[dockState];
   elements.dockLiveCount.textContent = String(liveSessions.length);

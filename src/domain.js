@@ -1,12 +1,14 @@
 import { createHash, randomUUID } from "node:crypto";
 
 export const HARNESSES = Object.freeze(["codex", "claude", "opencode"]);
+export const PROCESS_START_TOLERANCE_MS = 2000;
 
 export const EVENT_KINDS = Object.freeze({
   SESSION_STARTED: "session_started",
   PROCESS_SEEN: "process_seen",
   PROCESS_GONE: "process_gone",
   WORK_STARTED: "work_started",
+  WORK_INTERRUPTED: "work_interrupted",
   ACTIVITY_IDLE: "activity_idle",
   ATTENTION_REQUESTED: "attention_requested",
   ATTENTION_RESOLVED: "attention_resolved",
@@ -45,9 +47,18 @@ export function createSessionKey(harness, nativeSessionId) {
 
 function normalizeTimestamp(value) {
   if (value === undefined || value === null) return Date.now();
-  const parsed = typeof value === "string" ? Date.parse(value) : Number(value);
+  const parsed =
+    typeof value === "string" && !/^\s*[+-]?\d+(?:\.\d+)?\s*$/.test(value)
+      ? Date.parse(value)
+      : Number(value);
   if (!Number.isFinite(parsed) || parsed <= 0) return Date.now();
   return Math.min(parsed, Date.now() + 5 * 60_000);
+}
+
+function normalizeConfidence(value, fallback) {
+  const parsed = Number(value ?? fallback);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.max(0, Math.min(1, parsed));
 }
 
 export function normalizeEvent(input) {
@@ -70,6 +81,7 @@ export function normalizeEvent(input) {
   const completion = input.completion && typeof input.completion === "object" ? input.completion : {};
   const telemetry = TELEMETRY_SET.has(input.telemetry) ? input.telemetry : "hook";
   const attentionKind = ATTENTION_SET.has(attention.kind) ? attention.kind : "input";
+  const defaultConfidence = telemetry === "process" ? 0.45 : 1;
 
   return {
     schemaVersion: 1,
@@ -82,7 +94,7 @@ export function normalizeEvent(input) {
     occurredAt: normalizeTimestamp(input.occurredAt),
     receivedAt: Date.now(),
     telemetry,
-    confidence: Math.max(0, Math.min(1, Number(input.confidence ?? (telemetry === "process" ? 0.45 : 1)))),
+    confidence: normalizeConfidence(input.confidence, defaultConfidence),
     humanInitiated: Boolean(input.humanInitiated),
     metadata: {
       title: sanitizeText(metadata.title, 160),
@@ -94,6 +106,11 @@ export function normalizeEvent(input) {
       terminalKind: sanitizeText(metadata.terminalKind, 32)?.toLowerCase() || null,
       terminalTarget: sanitizeText(metadata.terminalTarget, 256),
       terminalInstance: sanitizePath(metadata.terminalInstance),
+      hostApplication: sanitizeText(metadata.hostApplication, 32)?.toLowerCase() || null,
+      hostPid:
+        Number.isInteger(Number(metadata.hostPid)) && Number(metadata.hostPid) > 0
+          ? Number(metadata.hostPid)
+          : null,
       startedAt: metadata.startedAt ? normalizeTimestamp(metadata.startedAt) : null,
     },
     attention: {

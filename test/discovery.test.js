@@ -1,16 +1,21 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import test from "node:test";
 import { DatabaseSync } from "node:sqlite";
-import { EVENT_KINDS } from "../src/domain.js";
+import { createSessionKey, EVENT_KINDS } from "../src/domain.js";
 import {
   activityHintFromTerminalTitle,
   detectHarnessProcess,
+  findHarnessAncestor,
   gnomeTerminalLocatorFrom,
   hasNestedHarnessMarker,
   isInteractiveHarnessProcess,
   isNestedHarnessProcess,
   LinuxProcessDiscovery,
   processActivitySample,
+  readCodexRolloutLifecycle,
   readOpenCodeActivityHint,
   readTerminalTitle,
   terminalLocatorFrom,
@@ -25,6 +30,57 @@ test("process discovery uses exact harness executable signatures", () => {
   );
   assert.equal(detectHarnessProcess({ comm: "opencode", argv: ["/usr/bin/opencode"] }), "opencode");
   assert.equal(detectHarnessProcess({ comm: "node", argv: ["node", "/work/codex-notes.js"] }), null);
+});
+
+test("hook ancestry carries a VS Code application-host route", () => {
+  const processes = new Map([
+    [
+      8184,
+      {
+        pid: 8184,
+        parentPid: 7846,
+        harness: "codex",
+        comm: "codex",
+        argv: [
+          "/home/example/.vscode/extensions/openai.chatgpt-26.715.61943-linux-x64/bin/linux-x86_64/codex",
+          "-c",
+          "features.code_mode_host=true",
+          "app-server",
+        ],
+        cwd: "/work/aim-project",
+        startTicks: 100,
+        environment: new Map(),
+      },
+    ],
+    [
+      7846,
+      {
+        pid: 7846,
+        parentPid: 7440,
+        harness: null,
+        comm: "code",
+        argv: [
+          "/usr/share/code/code --type=utility --utility-sub-type=node.mojom.NodeService",
+        ],
+        environment: new Map(),
+      },
+    ],
+    [
+      7440,
+      {
+        pid: 7440,
+        parentPid: 1,
+        harness: null,
+        comm: "code",
+        argv: ["/usr/share/code/code"],
+        environment: new Map(),
+      },
+    ],
+  ]);
+
+  const ancestor = findHarnessAncestor("codex", 8184, (pid) => processes.get(pid));
+  assert.equal(ancestor.hostApplication, "vscode");
+  assert.equal(ancestor.hostPid, 7846);
 });
 
 test("terminal discovery captures safe structured focus targets", () => {
@@ -125,6 +181,118 @@ test("tmux pane titles provide Codex status hints without reading pane content",
   assert.equal(readTerminalTitle({ ...processInfo, terminalTarget: "not-a-pane" }, () => assert.fail()), null);
 });
 
+test("Codex rollout discovery reads lifecycle metadata and excludes subagents", () => {
+  const temporary = mkdtempSync(path.join(tmpdir(), "switchboard-codex-rollout-"));
+  const sessionId = "11111111-2222-4333-8444-555555555555";
+  const turnId = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+  const main = path.join(temporary, `rollout-test-${sessionId}.jsonl`);
+  const subagent = path.join(temporary, "rollout-test-99999999-2222-4333-8444-555555555555.jsonl");
+  try {
+    writeFileSync(
+      main,
+      [
+        JSON.stringify({ type: "session_meta", payload: { id: sessionId, thread_source: "user" } }),
+        JSON.stringify({ type: "response_item", payload: { type: "message", content: "PRIVATE" } }),
+        JSON.stringify({
+          timestamp: "2026-08-12T12:00:00.000Z",
+          type: "event_msg",
+          payload: { type: "turn_aborted", turn_id: turnId, reason: "interrupted" },
+        }),
+        "",
+      ].join("\n"),
+    );
+    writeFileSync(
+      subagent,
+      `${JSON.stringify({ type: "session_meta", payload: { thread_source: "subagent" } })}\n`,
+    );
+
+    const parsed = readCodexRolloutLifecycle(main);
+    assert.deepEqual(parsed, {
+      sessionId,
+      lifecycle: {
+        type: "turn_aborted",
+        turnId,
+        occurredAt: Date.parse("2026-08-12T12:00:00.000Z"),
+      },
+    });
+    assert.equal(JSON.stringify(parsed).includes("PRIVATE"), false);
+    assert.equal(readCodexRolloutLifecycle(subagent), null);
+  } finally {
+    rmSync(temporary, { recursive: true, force: true });
+  }
+});
+
+test("Codex rollout interruption overrides a stale Working process title", () => {
+  const store = new SwitchboardStore(":memory:");
+  try {
+    let clock = Date.now();
+    const sessionId = "11111111-2222-4333-8444-555555555555";
+    const current = {
+      processKey: "codex:32:320",
+      harness: "codex",
+      nativeSessionId: sessionId,
+      pid: 32,
+      title: "Current Codex",
+      cwd: "/work/current",
+      project: "current",
+      terminal: "tmux %32",
+      terminalKind: "tmux",
+      terminalTarget: "%32",
+      terminalInstance: "/tmp/tmux/default",
+      activityHint: "working",
+      startedAt: clock - 60_000,
+      codexRollout: {
+        sessionId,
+        lifecycle: {
+          type: "turn_aborted",
+          turnId: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+          occurredAt: clock - 1_000,
+        },
+      },
+    };
+    const provisional = store.ingest({
+      eventId: "codex-rollout-provisional",
+      harness: "codex",
+      nativeSessionId: "process-32-320",
+      kind: EVENT_KINDS.PROCESS_SEEN,
+      nativeType: "process.discovered",
+      occurredAt: clock - 2_000,
+      telemetry: "process",
+      metadata: {
+        pid: current.pid,
+        cwd: current.cwd,
+        startedAt: current.startedAt,
+        terminal: current.terminal,
+        terminalKind: current.terminalKind,
+        terminalTarget: current.terminalTarget,
+        terminalInstance: current.terminalInstance,
+      },
+    });
+    const discovery = new LinuxProcessDiscovery({
+      store,
+      scan: () => [current],
+      now: () => clock,
+      logger: { error() {} },
+    });
+
+    discovery.tick();
+    let detail = store.getSessionDetail(createSessionKey("codex", sessionId));
+    assert.equal(store.getSession(provisional.session.id), null);
+    assert.equal(store.db.prepare("SELECT COUNT(*) AS count FROM sessions").get().count, 1);
+    assert.equal(detail.session.primaryState, "interrupted");
+    assert.equal(detail.session.unread, false);
+    assert.equal(detail.session.telemetry, "native");
+
+    clock += 2_500;
+    discovery.tick();
+    detail = store.getSessionDetail(createSessionKey("codex", sessionId));
+    assert.equal(detail.session.primaryState, "interrupted");
+    assert.equal(detail.events.filter((item) => item.kind === "work_interrupted").length, 1);
+  } finally {
+    store.close();
+  }
+});
+
 test("OpenCode lifecycle metadata treats queued tools as working, not human attention", () => {
   const database = new DatabaseSync(":memory:");
   try {
@@ -197,6 +365,19 @@ test("fallback discovery keeps only foreground terminal harnesses", () => {
   assert.equal(isInteractiveHarnessProcess({ ...foreground, state: "T" }), false);
   assert.equal(isInteractiveHarnessProcess({ ...foreground, processGroup: 119 }), false);
   assert.equal(isInteractiveHarnessProcess({ ...foreground, tty: "socket:[123]" }), false);
+  assert.equal(
+    isInteractiveHarnessProcess({
+      ...foreground,
+      tty: "socket:[123]",
+      argv: [
+        "/home/example/.vscode/extensions/openai.chatgpt-26.715.61943-linux-x64/bin/linux-x86_64/codex",
+        "-c",
+        "features.code_mode_host=true",
+        "app-server",
+      ],
+    }),
+    true,
+  );
 });
 
 test("nested harnesses are recognized through ancestry and inherited markers", () => {
@@ -458,6 +639,231 @@ test("process inference does not override native harness activity", () => {
   }
 });
 
+test("VS Code discovery annotates every native thread without replacing its workspace", () => {
+  const store = new SwitchboardStore(":memory:");
+  try {
+    const clock = Date.now();
+    const startedAt = clock - 10_000;
+    for (const [nativeSessionId, cwd] of [
+      ["vscode-thread-one", "/work/project-one"],
+      ["vscode-thread-two", "/work/project-two"],
+    ]) {
+      store.ingest({
+        eventId: `start-${nativeSessionId}`,
+        harness: "codex",
+        nativeSessionId,
+        kind: EVENT_KINDS.SESSION_STARTED,
+        nativeType: "SessionStart",
+        occurredAt: clock - 5_000,
+        telemetry: "hook",
+        metadata: { pid: 8184, cwd, startedAt },
+      });
+    }
+    const current = {
+      processKey: "codex:8184:100",
+      harness: "codex",
+      nativeSessionId: "process-8184-100",
+      pid: 8184,
+      title: "skylab · codex",
+      cwd: "/home/example",
+      project: "example",
+      terminal: "socket:[123]",
+      terminalKind: null,
+      terminalTarget: null,
+      terminalInstance: null,
+      hostApplication: "vscode",
+      hostPid: 7846,
+      startedAt,
+    };
+    const discovery = new LinuxProcessDiscovery({
+      store,
+      scan: () => [current],
+      now: () => clock,
+      logger: { error() {} },
+    });
+
+    discovery.tick();
+    const sessions = store.getSnapshot().sessions;
+    assert.equal(sessions.length, 2);
+    assert.deepEqual(
+      sessions.map((session) => session.cwd).sort(),
+      ["/work/project-one", "/work/project-two"],
+    );
+    assert.equal(sessions.every((session) => session.hostApplication === "vscode"), true);
+    assert.equal(sessions.every((session) => session.hostPid === 7846), true);
+    assert.equal(sessions.every((session) => session.focusProvider === "vscode"), true);
+  } finally {
+    store.close();
+  }
+});
+
+test("a stable Codex tmux working title resolves an approved permission after two scans", () => {
+  const store = new SwitchboardStore(":memory:");
+  try {
+    let clock = Date.now();
+    let terminalTitle = "aim-project";
+    const startedAt = clock - 1_000;
+    const current = () => ({
+      processKey: "codex:41:410",
+      harness: "codex",
+      nativeSessionId: "process-41-410",
+      pid: 41,
+      title: "Current Codex",
+      cwd: "/work/current",
+      project: "current",
+      terminal: "tmux %41",
+      terminalKind: "tmux",
+      terminalTarget: "%41",
+      terminalInstance: "/tmp/tmux/default",
+      terminalTitle,
+      activityHint: activityHintFromTerminalTitle("codex", terminalTitle),
+      startedAt,
+    });
+    const discovery = new LinuxProcessDiscovery({
+      store,
+      intervalMs: 2_500,
+      scan: () => [current()],
+      now: () => clock,
+      logger: { error() {} },
+    });
+
+    discovery.tick();
+    const metadata = { pid: 41, startedAt };
+    store.ingest({
+      eventId: "codex-native-title-start",
+      harness: "codex",
+      nativeSessionId: "codex-native-title",
+      kind: EVENT_KINDS.SESSION_STARTED,
+      nativeType: "SessionStart",
+      occurredAt: clock + 1,
+      telemetry: "hook",
+      metadata,
+    });
+    const attention = store.ingest({
+      eventId: "codex-native-title-approval",
+      harness: "codex",
+      nativeSessionId: "codex-native-title",
+      kind: EVENT_KINDS.ATTENTION_REQUESTED,
+      nativeType: "PermissionRequest",
+      occurredAt: clock + 2,
+      telemetry: "hook",
+      metadata,
+      attention: { kind: "approval", summary: "Approval requested for Bash" },
+    });
+
+    terminalTitle = "[ . ] Action Required | aim-project";
+    clock += 2_500;
+    discovery.tick();
+    clock += 2_500;
+    discovery.tick();
+    assert.equal(store.getSessionDetail(attention.session.id).session.primaryState, "needs_attention");
+
+    terminalTitle = "⠹ aim-project";
+    clock += 2_500;
+    discovery.tick();
+    assert.equal(store.getSessionDetail(attention.session.id).session.primaryState, "needs_attention");
+
+    // Returning to Action Required invalidates the first working observation.
+    terminalTitle = "[ . ] Action Required | aim-project";
+    clock += 2_500;
+    discovery.tick();
+    terminalTitle = "⠴ aim-project";
+    clock += 2_500;
+    discovery.tick();
+    assert.equal(store.getSessionDetail(attention.session.id).session.primaryState, "needs_attention");
+
+    clock += 2_500;
+    discovery.tick();
+    const detail = store.getSessionDetail(attention.session.id);
+    assert.equal(detail.session.primaryState, "working");
+    assert.equal(detail.session.telemetry, "hook");
+    assert.equal(detail.events[0].nativeType, "process.status.approval_resolved");
+  } finally {
+    store.close();
+  }
+});
+
+test("Codex working-title evidence never clears a question", () => {
+  const store = new SwitchboardStore(":memory:");
+  try {
+    let clock = Date.now();
+    const startedAt = clock - 1_000;
+    const current = {
+      processKey: "codex:42:420",
+      harness: "codex",
+      nativeSessionId: "process-42-420",
+      pid: 42,
+      title: "Current Codex question",
+      cwd: "/work/current",
+      project: "current",
+      terminal: "tmux %42",
+      terminalKind: "tmux",
+      terminalTarget: "%42",
+      terminalInstance: "/tmp/tmux/default",
+      terminalTitle: "⠹ current",
+      activityHint: "working",
+      startedAt,
+    };
+    const discovery = new LinuxProcessDiscovery({
+      store,
+      intervalMs: 2_500,
+      scan: () => [current],
+      now: () => clock,
+      logger: { error() {} },
+    });
+
+    discovery.tick();
+    const question = store.ingest({
+      eventId: "codex-native-title-question",
+      harness: "codex",
+      nativeSessionId: "codex-native-question",
+      kind: EVENT_KINDS.ATTENTION_REQUESTED,
+      nativeType: "PreToolUse",
+      occurredAt: clock + 1,
+      telemetry: "hook",
+      metadata: { pid: 42, startedAt },
+      attention: { kind: "question", summary: "Codex has a question" },
+    });
+
+    clock += 2_500;
+    discovery.tick();
+    clock += 2_500;
+    discovery.tick();
+    assert.equal(store.getSessionDetail(question.session.id).session.primaryState, "needs_attention");
+    assert.equal(
+      store.getSessionDetail(question.session.id).events.some(
+        (event) => event.nativeType === "process.status.approval_resolved",
+      ),
+      false,
+    );
+
+    const nonTmuxApproval = store.ingest({
+      eventId: "codex-native-title-non-tmux-approval",
+      harness: "codex",
+      nativeSessionId: "codex-native-question",
+      kind: EVENT_KINDS.ATTENTION_REQUESTED,
+      nativeType: "PermissionRequest",
+      occurredAt: clock + 1,
+      telemetry: "hook",
+      metadata: { pid: 42, startedAt },
+      attention: { kind: "approval", summary: "Approval requested for Bash" },
+    });
+    current.terminalKind = "gnome-terminal";
+    current.terminal = "GNOME Terminal · pts/42";
+    current.terminalTarget = "/org/gnome/Terminal/screen/test_42";
+    clock += 2_500;
+    discovery.tick();
+    clock += 2_500;
+    discovery.tick();
+    assert.equal(
+      store.getSessionDetail(nonTmuxApproval.session.id).session.primaryState,
+      "needs_attention",
+    );
+  } finally {
+    store.close();
+  }
+});
+
 test("process discovery reconciles stale rows and can reopen a resumed process", () => {
   const store = new SwitchboardStore(":memory:");
   try {
@@ -517,6 +923,158 @@ test("process discovery reconciles stale rows and can reopen a resumed process",
     discovery.tick();
     assert.equal(store.getSession(currentId).presence, "live");
     assert.equal(store.getSessionDetail(currentId).events.length, 3);
+  } finally {
+    store.close();
+  }
+});
+
+test("discovery reuses a native PID row after restart and removes a hidden provisional duplicate", () => {
+  const store = new SwitchboardStore(":memory:");
+  try {
+    const terminal = {
+      pid: 71,
+      cwd: "/work/restart",
+      title: "Restarted Codex",
+      terminal: "tmux %4",
+      terminalKind: "tmux",
+      terminalTarget: "%4",
+      terminalInstance: "/tmp/tmux/default",
+    };
+    const native = store.ingest({
+      eventId: "native-before-restart",
+      harness: "codex",
+      nativeSessionId: "native-restart-71",
+      kind: EVENT_KINDS.SESSION_STARTED,
+      nativeType: "SessionStart",
+      telemetry: "hook",
+      metadata: terminal,
+    });
+    const current = {
+      processKey: "codex:71:700",
+      harness: "codex",
+      nativeSessionId: "process-71-700",
+      startedAt: Date.now() - 1_000,
+      ...terminal,
+    };
+    // Simulate the hidden provisional row produced by an older daemon version.
+    store.ingest({
+      eventId: "legacy-hidden-process-row",
+      harness: "codex",
+      nativeSessionId: "process-71-700",
+      kind: EVENT_KINDS.PROCESS_SEEN,
+      nativeType: "process.discovered",
+      telemetry: "process",
+      metadata: terminal,
+    });
+    assert.equal(store.db.prepare("SELECT COUNT(*) AS count FROM sessions").get().count, 2);
+    assert.equal(store.getSnapshot().sessions.length, 1);
+
+    let scanned = [current];
+    const discovery = new LinuxProcessDiscovery({
+      store,
+      scan: () => scanned,
+      logger: { error() {} },
+    });
+
+    discovery.tick();
+    assert.equal(store.db.prepare("SELECT COUNT(*) AS count FROM sessions").get().count, 1);
+    assert.equal(store.getSnapshot().sessions[0].id, native.session.id);
+
+    scanned = [];
+    discovery.tick();
+    assert.equal(store.listLiveSessionsForPid("codex", 71).length, 0);
+    const recent = store.getSnapshot().sessions;
+    assert.equal(recent.length, 1);
+    assert.equal(recent[0].id, native.session.id);
+    assert.equal(recent[0].presence, "closed");
+  } finally {
+    store.close();
+  }
+});
+
+test("process discovery keeps a new process live when Linux reuses its PID", () => {
+  const store = new SwitchboardStore(":memory:");
+  let clock = 100_000;
+  const oldProcess = {
+    processKey: "codex:81:800",
+    harness: "codex",
+    nativeSessionId: "process-81-800",
+    pid: 81,
+    title: "Old Codex",
+    cwd: "/work/reused-pid",
+    project: "reused-pid",
+    terminal: "tmux %8",
+    terminalKind: "tmux",
+    terminalTarget: "%8",
+    terminalInstance: "/tmp/tmux/default",
+    startedAt: 90_000,
+  };
+  const newProcess = {
+    ...oldProcess,
+    processKey: "codex:81:801",
+    nativeSessionId: "process-81-801",
+    title: "New Codex",
+    startedAt: 190_000,
+  };
+  let scanned = [oldProcess];
+  const discovery = new LinuxProcessDiscovery({
+    store,
+    scan: () => scanned,
+    now: () => clock,
+    logger: { error() {} },
+  });
+
+  try {
+    discovery.tick();
+    clock = 200_000;
+    scanned = [newProcess];
+    discovery.tick();
+
+    assert.equal(store.getSession(createSessionKey("codex", oldProcess.nativeSessionId)).presence, "closed");
+    assert.equal(store.getSession(createSessionKey("codex", newProcess.nativeSessionId)).presence, "live");
+    assert.equal(store.resolveSessionForPid("codex", 81), createSessionKey("codex", newProcess.nativeSessionId));
+  } finally {
+    store.close();
+  }
+});
+
+test("startup reconciliation does not merge a reused PID into a stale native session", () => {
+  const store = new SwitchboardStore(":memory:");
+  const stale = store.ingest({
+    eventId: "native-old-pid",
+    harness: "opencode",
+    nativeSessionId: "native-old-pid",
+    kind: EVENT_KINDS.SESSION_STARTED,
+    nativeType: "session.created",
+    occurredAt: 100_000,
+    telemetry: "native",
+    metadata: { pid: 91, startedAt: 90_000, cwd: "/work/reused-pid" },
+  });
+  const current = {
+    processKey: "opencode:91:901",
+    harness: "opencode",
+    nativeSessionId: "process-91-901",
+    pid: 91,
+    title: "Current OpenCode",
+    cwd: "/work/reused-pid",
+    project: "reused-pid",
+    terminal: "tmux %9",
+    terminalKind: "tmux",
+    terminalTarget: "%9",
+    terminalInstance: "/tmp/tmux/default",
+    startedAt: 190_000,
+  };
+  const discovery = new LinuxProcessDiscovery({
+    store,
+    scan: () => [current],
+    now: () => 200_000,
+    logger: { error() {} },
+  });
+
+  try {
+    discovery.tick();
+    assert.equal(store.getSession(stale.session.id).presence, "closed");
+    assert.equal(store.getSession(createSessionKey("opencode", current.nativeSessionId)).presence, "live");
   } finally {
     store.close();
   }

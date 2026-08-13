@@ -25,7 +25,7 @@ Usage: npm run setup -- [options]
   --autostart    start the desktop pane after login
   --dry-run      report intended changes without writing or launching
   --no-launch    finish setup without opening the desktop pane
-  --skip-gnome   do not install the GNOME Terminal connector
+  --skip-gnome   do not install the GNOME desktop connector
   --skip-hooks   do not install Codex, Claude Code, or OpenCode events
 `;
 }
@@ -189,7 +189,7 @@ async function main() {
     runNodeScript("scripts/install-desktop.js", autostart ? ["--autostart"] : []);
   }
 
-  heading("GNOME Terminal connector");
+  heading("GNOME desktop connector");
   if (!gnome.install) {
     process.stdout.write(`  ${gnome.message}\n`);
   } else if (dryRun) {

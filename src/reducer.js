@@ -27,6 +27,8 @@ export function createInitialSession(event) {
     terminalKind: event.metadata.terminalKind,
     terminalTarget: event.metadata.terminalTarget,
     terminalInstance: event.metadata.terminalInstance,
+    hostApplication: event.metadata.hostApplication,
+    hostPid: event.metadata.hostPid,
     startedAt: event.metadata.startedAt || event.occurredAt,
     lastActivityAt: event.occurredAt,
     completedAt: null,
@@ -54,6 +56,8 @@ function mergeMetadata(session, event) {
   if (metadata.terminalKind) session.terminalKind = metadata.terminalKind;
   if (metadata.terminalTarget) session.terminalTarget = metadata.terminalTarget;
   if (metadata.terminalInstance) session.terminalInstance = metadata.terminalInstance;
+  if (metadata.hostApplication) session.hostApplication = metadata.hostApplication;
+  if (metadata.hostPid) session.hostPid = metadata.hostPid;
   if (metadata.startedAt) session.startedAt = Math.min(session.startedAt || metadata.startedAt, metadata.startedAt);
 
   if (event.telemetry !== "process" || session.telemetry === "process") {
@@ -110,9 +114,25 @@ export function reduceSession(previous, event) {
       session.lastActivityAt = event.occurredAt;
       break;
 
+    case EVENT_KINDS.WORK_INTERRUPTED:
+      session.presence = "live";
+      session.activity = "interrupted";
+      session.endedAt = null;
+      clearAttention(session);
+      clearError(session);
+      // An interrupt is initiated while the human is looking at the turn. It
+      // is neither a completed result nor something that should become unread.
+      session.seenSeq = session.completionSeq;
+      session.unread = false;
+      session.seenAt = event.occurredAt;
+      session.lastActivityAt = event.occurredAt;
+      break;
+
     case EVENT_KINDS.ACTIVITY_IDLE:
       session.presence = "live";
-      session.activity = "idle";
+      // A generic idle signal confirms that no work is running, but it does
+      // not erase the more useful reason that the turn stopped.
+      if (session.activity !== "interrupted") session.activity = "idle";
       session.lastActivityAt = event.occurredAt;
       break;
 
@@ -137,6 +157,14 @@ export function reduceSession(previous, event) {
 
     case EVENT_KINDS.WORK_COMPLETED:
       session.presence = "live";
+      // Some harnesses emit their ordinary idle/completion cleanup immediately
+      // after an explicit abort. Without a new work-start signal, that cleanup
+      // must not turn an interruption into a successful unread result.
+      if (session.activity === "interrupted") {
+        clearAttention(session);
+        session.lastActivityAt = event.occurredAt;
+        break;
+      }
       session.activity = "idle";
       clearAttention(session);
       session.completionSeq += 1;
@@ -183,6 +211,7 @@ export function derivePrimaryState(session) {
   if (session.errorKind) return "error";
   if (session.attention === "required") return "needs_attention";
   if (session.activity === "working") return "working";
+  if (session.activity === "interrupted") return "interrupted";
   if (session.unread) return "unread";
   if (session.presence === "live" && session.activity === "idle") return "idle";
   if (session.presence === "live") return "unknown";
@@ -193,7 +222,7 @@ export function deriveGroup(session) {
   const state = derivePrimaryState(session);
   if (["error", "needs_attention", "unread"].includes(state)) return "needs_you";
   if (state === "working") return "working";
-  if (["idle", "unknown"].includes(state)) return "open";
+  if (["interrupted", "idle", "unknown"].includes(state)) return "open";
   return "recent";
 }
 
@@ -202,24 +231,33 @@ const PRIORITY = Object.freeze({
   needs_attention: 1,
   unread: 2,
   working: 3,
-  idle: 4,
-  unknown: 5,
-  recent: 6,
+  interrupted: 4,
+  idle: 5,
+  unknown: 6,
+  recent: 7,
 });
 
 export function decorateSession(session) {
   const primaryState = derivePrimaryState(session);
-  const hasProvider =
+  const hasTerminalProvider =
     ["tmux", "wezterm", "zellij", "gnome-terminal"].includes(session.terminalKind) ||
     (session.terminalKind === "kitty" && Boolean(session.terminalInstance));
-  const focusable = session.presence === "live" && hasProvider && Boolean(session.terminalTarget);
+  const terminalFocusable = hasTerminalProvider && Boolean(session.terminalTarget);
+  const hostFocusable =
+    session.hostApplication === "vscode" &&
+    (Number.isInteger(session.hostPid) || Boolean(session.cwd));
+  const focusable = session.presence === "live" && (hostFocusable || terminalFocusable);
   return {
     ...session,
     primaryState,
     group: deriveGroup(session),
     priority: PRIORITY[primaryState],
     focusable,
-    focusProvider: focusable ? session.terminalKind : null,
+    focusProvider: focusable
+      ? hostFocusable
+        ? session.hostApplication
+        : session.terminalKind
+      : null,
   };
 }
 

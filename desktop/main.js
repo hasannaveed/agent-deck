@@ -253,8 +253,8 @@ function focusSessionOnce(sessionId) {
     if (!result.ok) return result;
 
     // GNOME may drop a non-focusable Wayland window behind the activated
-    // terminal even when Electron still reports it as visible. Re-show and
-    // re-raise the pinned pane without reclaiming keyboard focus.
+    // terminal or application even when Electron still reports it as visible.
+    // Re-show and re-raise the pinned pane without reclaiming keyboard focus.
     keepPinnedWindowVisibleAfterJump({
       window: switchboardWindow,
       shouldRestore: () =>

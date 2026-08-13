@@ -26,11 +26,19 @@ export function nativeSessionId(raw) {
   );
 }
 
-function eventIdentifier(raw, type, sessionId) {
+function eventIdentifier(raw, type, sessionId, kind) {
   const durable = raw?.durable || raw?.properties?.durable || raw?.data?.durable;
   if (raw?.id !== undefined && raw?.id !== null) return `${type}:${raw.id}`;
   if (durable?.aggregateID && durable?.seq !== undefined) {
     return `${type}:${durable.aggregateID}:${durable.seq}`;
+  }
+  const payload = eventPayload(raw);
+  const turnId = raw?.turn_id || raw?.turnId || payload?.turn_id || payload?.turnId || payload?.turn?.id;
+  if (
+    turnId &&
+    ["work_started", "work_completed", "work_interrupted"].includes(kind)
+  ) {
+    return `${kind}:${turnId}`;
   }
   return `${type}:${sessionId}:${randomUUID()}`;
 }
@@ -61,7 +69,7 @@ export function baseEvent(harness, raw, context = {}, overrides = {}) {
 
   return {
     schemaVersion: 1,
-    eventId: overrides.eventId || eventIdentifier(raw, type, sessionId),
+    eventId: overrides.eventId || eventIdentifier(raw, type, sessionId, overrides.kind),
     harness,
     nativeSessionId: sessionId,
     kind: overrides.kind,
@@ -80,6 +88,8 @@ export function baseEvent(harness, raw, context = {}, overrides = {}) {
       terminalKind: context.terminalKind || null,
       terminalTarget: context.terminalTarget || null,
       terminalInstance: context.terminalInstance || null,
+      hostApplication: context.hostApplication || null,
+      hostPid: context.hostPid || null,
       startedAt: info?.createdAt ? Number(info.createdAt) * 1000 : context.startedAt || null,
       ...(overrides.metadata || {}),
     },

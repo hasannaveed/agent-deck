@@ -23,6 +23,7 @@ const STATE = {
   error: { glyph: "×", label: "Error", color: "38;2;233;105;105" },
   needs_attention: { glyph: "!", label: "Needs you", color: "38;2;235;184;93" },
   working: { glyph: "●", label: "Working", color: "38;2;104;169;255" },
+  interrupted: { glyph: "■", label: "Interrupted", color: "38;2;214;148;102" },
   unread: { glyph: "◆", label: "Unread", color: "38;2;86;201;176" },
   idle: { glyph: "○", label: "Idle", color: "38;2;169;154;226" },
   unknown: { glyph: "○", label: "Open", color: "38;2;142;161;178" },
@@ -37,6 +38,12 @@ const HARNESS_SHORT = {
   codex: "CX",
   claude: "CC",
   opencode: "OC",
+};
+const HOST_LABELS = {
+  vscode: "VS CODE",
+};
+const HOST_SHORT = {
+  vscode: "VS",
 };
 const ACCENT = "38;2;112;186;122";
 const SELECTED = "1;38;2;255;255;255;48;2;84;86;87";
@@ -107,6 +114,7 @@ function stateDescription(session) {
   if (session.primaryState === "error") return session.errorSummary || "The session stopped with an error.";
   if (session.primaryState === "needs_attention") return session.attentionSummary || "Human input is required.";
   if (session.primaryState === "working") return "The agent is actively working.";
+  if (session.primaryState === "interrupted") return "The turn was stopped by the human.";
   if (session.primaryState === "unread") return "The latest result has not been opened.";
   if (session.primaryState === "idle") return "The session is open and waiting.";
   if (session.primaryState === "unknown") return "The session is open. Connect its harness integration for exact activity states.";
@@ -133,7 +141,7 @@ function tableLayout(width) {
   const roomy = width >= 58;
   const innerWidth = Math.max(1, width - 2);
   const harnessWidth = roomy ? 12 : 4;
-  const stateWidth = roomy ? 11 : 5;
+  const stateWidth = roomy ? 13 : 5;
   const ageWidth = 4;
   return {
     innerWidth,
@@ -150,6 +158,7 @@ function shortState(state) {
     error: "ERR",
     needs_attention: "NEED",
     working: "WORK",
+    interrupted: "INT",
     unread: "NEW",
     idle: "IDLE",
     unknown: "OPEN",
@@ -160,9 +169,13 @@ function shortState(state) {
 function formatSessionRow(session, width, { selected = false, color = true } = {}) {
   const state = STATE[session.primaryState] || STATE.unknown;
   const layout = tableLayout(width);
-  const harness = layout.roomy
+  let harness = layout.roomy
     ? HARNESS_LABELS[session.harness] || session.harness.toUpperCase()
     : HARNESS_SHORT[session.harness] || session.harness.slice(0, 2).toUpperCase();
+  if (session.hostApplication) {
+    const host = HOST_SHORT[session.hostApplication] || session.hostApplication.slice(0, 2).toUpperCase();
+    harness = layout.roomy ? `${harness} · ${host}` : `${harness.slice(0, 2)}·${host.slice(0, 1)}`;
+  }
   const stateLabel = layout.roomy ? `${state.glyph} ${state.label.toUpperCase()}` : shortState(session.primaryState);
   const age = relativeTime(session.lastEventAt || session.updatedAt);
   const plain = ` ${fit(harness, layout.harnessWidth)} ${fit(session.title, layout.titleWidth)} ${fit(stateLabel, layout.stateWidth)} ${fit(age, layout.ageWidth)} `;
@@ -531,6 +544,7 @@ class TerminalApp {
     const fields = [
       ["Project", session.project],
       ["Branch", session.branch],
+      ["Host", HOST_LABELS[session.hostApplication] || session.hostApplication],
       ["Terminal", session.terminal],
       ["Jump", session.focusable ? session.focusProvider : "Unavailable"],
       ["Location", session.cwd],
