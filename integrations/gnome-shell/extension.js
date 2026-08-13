@@ -249,9 +249,9 @@ class SwitchboardBridge {
   }
 
   _findApplicationWindow(pid, application) {
+    const candidates = [];
     for (const actor of global.get_window_actors()) {
       const window = actor.meta_window;
-      if (window.get_pid?.() !== pid) continue;
       const windowClass = [window.get_wm_class?.(), window.get_wm_class_instance?.()]
         .filter(Boolean)
         .join(" ");
@@ -260,10 +260,14 @@ class SwitchboardBridge {
         application === "vscode" &&
         (/(?:^|\s)code(?:\s|$)/i.test(windowClass) || /Visual Studio Code$/i.test(title))
       ) {
-        return window;
+        if (window.get_pid?.() === pid) return window;
+        candidates.push(window);
       }
     }
-    return null;
+    // The session PID belongs to VS Code's extension host, not its renderer.
+    // A sole editor window is therefore unambiguous and can be raised without
+    // waiting for the comparatively slow `code --status` diagnostic command.
+    return candidates.length === 1 ? candidates[0] : null;
   }
 
   _keepSwitchboardAbove(window) {

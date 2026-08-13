@@ -272,11 +272,14 @@ Every focusable session stores a structured application or terminal target. Focu
 The official Codex extension is recognized by its `openai.chatgpt-*` executable,
 code-mode app-server arguments, and VS Code extension-host ancestry. The daemon
 stores `hostApplication: vscode` and the extension-host PID independently from
-`terminalKind`. At jump time, `code --status` maps that host to the matching
-editor-window PID and the GNOME bridge activates only a validated VS Code window.
-If exact activation is unavailable, `code <cwd>` opens the recorded workspace
-without shell interpolation. Exact selection of an individual Codex thread is
-not available through the upstream extension's public interface.
+`terminalKind`. At jump time, the GNOME bridge raises a sole validated VS Code
+window immediately. If several editor windows exist, `code --status` maps the
+extension host to its exact renderer PID before activation. A detected live host
+never falls back to opening its workspace behind the foreground app; connector
+or mapping failures remain visible to the user. Legacy records without a host
+PID may still reopen their recorded workspace without shell interpolation.
+Exact selection of an individual Codex thread is not available through the
+upstream extension's public interface.
 
 ### tmux
 

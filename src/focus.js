@@ -49,7 +49,7 @@ function resolveTerminalLauncher(which) {
 
 async function defaultRun(file, args, options = {}) {
   const timeoutMs = Number.isFinite(options.timeoutMs)
-    ? Math.max(250, Math.min(5000, options.timeoutMs))
+    ? Math.max(250, Math.min(8000, options.timeoutMs))
     : 1800;
   return execFileAsync(file, args, {
     encoding: "utf8",
@@ -166,27 +166,60 @@ async function focusVisualStudioCode(session, { which, run, launch, env }) {
   }
 
   const extensionHostPid = validNumericTarget(session.hostPid);
-  if (extensionHostPid && which("gdbus")) {
+  if (session.hostPid != null && !extensionHostPid) {
+    return {
+      ok: false,
+      code: "vscode_window_unavailable",
+      message: "This VS Code session does not expose a safe application target.",
+    };
+  }
+  if (extensionHostPid) {
+    // A single VS Code window can be activated immediately by the GNOME
+    // connector. When several editor windows exist, the connector declines
+    // this host-PID lookup and the slower diagnostic mapping below resolves the
+    // exact renderer PID instead.
+    const direct = await focusGnomeApplicationWindow(
+      { application: "vscode", pid: extensionHostPid },
+      { env, which, run },
+    );
+    if (direct.ok) {
+      return {
+        ok: true,
+        provider: "vscode",
+        reused: true,
+        message: direct.message || "Focused the existing VS Code window.",
+      };
+    }
+    if (direct.code !== "gnome_application_unavailable") return direct;
+
     try {
-      const status = await run(code, ["--status"], { timeoutMs: 3500 });
+      const status = await run(code, ["--status"], { timeoutMs: 8000 });
       const window = parseVisualStudioCodeStatus(status.stdout, extensionHostPid);
-      if (window) {
-        const focused = await focusGnomeApplicationWindow(
-          { application: "vscode", pid: window.pid },
-          { env, which, run },
-        );
-        if (focused.ok) {
-          return {
+      if (!window) {
+        return {
+          ok: false,
+          code: "vscode_window_unavailable",
+          message: "VS Code is running, but the window for this Codex session could not be identified.",
+        };
+      }
+      const focused = await focusGnomeApplicationWindow(
+        { application: "vscode", pid: window.pid },
+        { env, which, run },
+      );
+      return focused.ok
+        ? {
             ok: true,
             provider: "vscode",
             reused: true,
             message: focused.message || "Focused the existing VS Code window.",
-          };
-        }
-      }
+          }
+        : focused;
     } catch {
-      // VS Code's diagnostic mapping and the GNOME connector are optional.
-      // Opening the known workspace below remains a safe, useful fallback.
+      return {
+        ok: false,
+        code: "vscode_window_lookup_failed",
+        message: "VS Code is running, but Switchboard could not map this Codex session to its window. Try again in a moment.",
+      };
     }
   }
 

@@ -68,6 +68,8 @@ cd agent-deck
 Choose the checkout location before setup and keep it there. Installed hooks,
 the desktop launcher, and the OpenCode plugin contain absolute paths back to
 this checkout. If you later move it, rerun `npm run setup` from the new location.
+Run the dependency installation and setup steps separately on every device;
+cloning the repository alone does not install that device's user integrations.
 
 ### 3. Install dependencies and preview setup
 
@@ -120,14 +122,30 @@ After setup:
 2. Start Codex, open `/hooks`, review the new user hooks, and trust the
    Switchboard entries once. The installer intentionally cannot bypass this
    user confirmation.
-3. On GNOME, follow the setup output. If it says the connector is pending, log
-   out of the desktop session and back in once. The installer schedules the
-   extension to be enabled after that login.
-4. Verify the completed installation:
+3. On GNOME, follow the setup output. If it says the connector is pending or
+   that GNOME Shell is still running an older connector protocol, save your
+   work and log out of the desktop session and back in once. Locking the screen
+   is not enough; rebooting also reloads the connector.
+4. After that login, start the desktop pane again unless `--autostart` already
+   opened it. Restart any TUI that survived in tmux so it loads the installed
+   code from this checkout.
+5. Verify the completed installation:
 
    ```bash
    npm run doctor
    ```
+
+6. On GNOME, verify the loaded desktop connector:
+
+   ```bash
+   gdbus call --session \
+     --dest com.skylabs.AgentSwitchboard.GnomeBridge \
+     --object-path /com/skylabs/AgentSwitchboard/GnomeBridge \
+     --method com.skylabs.AgentSwitchboard.GnomeBridge1.Ping
+   ```
+
+   The current connector replies with `('2',)`. A lower version means the new
+   files are installed but GNOME Shell still needs a full logout and login.
 
 If GNOME still reports that the connector is not running after logging back in,
 run these from the graphical session:
@@ -135,12 +153,13 @@ run these from the graphical session:
 ```bash
 npm run gnome:install
 gnome-extensions enable agent-switchboard@skylabs-ai.com
-npm run doctor
 ```
 
-The GNOME connector enables exact switching to ordinary GNOME Terminal windows
-and tabs. OpenCode permission and question prompts appear as `NEEDS YOU`;
-ordinary pending or running tools remain `WORKING`.
+Follow any logout instruction printed by `npm run gnome:install`, then run the
+`gdbus` verification above again. The GNOME connector enables exact switching
+to ordinary GNOME Terminal windows and tabs as well as existing VS Code windows.
+OpenCode permission and question prompts appear as `NEEDS YOU`; ordinary
+pending or running tools remain `WORKING`.
 
 ### 6. Start the desktop pane, TUI, or both
 
@@ -203,6 +222,22 @@ npm run opencode:install
 For convenient commands during development, run `npm link` once and then use
 `switchboardd`, `switchboard`, and `switchboardctl` directly.
 
+### Updating an existing installation
+
+After pulling a newer revision on any device, refresh its dependencies and
+machine-local integrations from that same checkout:
+
+```bash
+git pull --ff-only
+npm ci
+npm run setup -- --no-launch
+```
+
+Follow the connector output exactly. A connector upgrade may require one logout
+and login because GNOME Shell keeps the old extension code in memory. Then
+restart the GUI, TUI, and any standalone daemon so each process loads the new
+code. Existing runtime state and session history are preserved.
+
 ## Connect real harnesses
 
 Process discovery estimates state from non-content terminal status metadata and
@@ -262,7 +297,7 @@ npm run uninstall -- --purge       also remove runtime data after Switchboard st
 npm start                           open the native desktop pane
 npm run daemon                      run only the local daemon
 npm run tui                         open the interactive terminal UI
-npm run gnome:install               install the GNOME Terminal focus connector
+npm run gnome:install               install the GNOME desktop focus connector
 npm run opencode:install             install exact OpenCode prompt events
 switchboardd [--no-discovery]       run the local daemon
 switchboard                         open the TUI (daemon must be running)
@@ -323,8 +358,10 @@ states.
 Switchboard records a structured application or terminal target alongside each live session:
 
 - VS Code: maps the Codex extension-host process to its existing editor window
-  and activates that window through the GNOME connector. If the exact window is
-  gone or cannot be mapped, it safely asks VS Code to open the recorded workspace;
+  and activates that window through the GNOME connector. A sole editor window
+  is raised immediately; with several windows, Switchboard resolves the exact
+  renderer first. A detected live host is never replaced by a background-only
+  workspace launch when activation fails;
 - tmux: selects the exact pane, focuses an existing attached client's terminal,
   and attaches through the current TUI terminal only as a fallback;
 - WezTerm: activates the exact pane through `wezterm cli` and preserves its GUI
@@ -335,7 +372,8 @@ Switchboard records a structured application or terminal target alongside each l
 - GNOME Terminal: uses its inherited screen ID plus a small GNOME Shell
   extension to activate its Wayland window and select its tab.
 
-The VS Code route opens the correct existing editor window or workspace. The
+The VS Code route raises the correct existing editor window. Legacy records that
+do not contain an application-host PID may reopen their recorded workspace. The
 OpenAI extension does not expose a public external command for selecting one
 exact Codex conversation, so Switchboard does not claim to restore a particular
 thread when several threads share that editor window.

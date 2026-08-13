@@ -89,8 +89,10 @@ their launch tab is focused. This includes the host GNOME Terminal tab for an
 attached tmux client. Native `SessionStart` and user-prompt events also refresh
 the route at safe foreground moments. Background events never change a route.
 The same connector validates and activates an existing VS Code editor window
-for a Codex extension-host process. No manual link is needed for VS Code; when
-an exact window cannot be recovered, Switchboard opens the recorded workspace.
+for a Codex extension-host process. No manual link is needed for VS Code. A sole
+editor window is raised directly; if several are open, Switchboard maps the
+extension host to the exact renderer. Activation failures are reported instead
+of silently opening the workspace behind another foreground application.
 When the desktop pane is pinned, the connector also makes it sticky and raises
 it above the terminal after a jump without taking keyboard focus from the agent.
 

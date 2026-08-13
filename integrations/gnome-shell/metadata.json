@@ -3,5 +3,5 @@
   "name": "Agent Switchboard Desktop Bridge",
   "description": "Focuses terminals and application windows linked to Agent Switchboard sessions.",
   "shell-version": ["42", "43", "44"],
-  "version": 3
+  "version": 4
 }

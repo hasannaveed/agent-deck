@@ -88,6 +88,18 @@ function bridgeUnavailableMessage(error) {
   return detail ? `The GNOME connector could not be reached: ${detail}` : "The GNOME connector could not be reached.";
 }
 
+function applicationBridgeFailure(error) {
+  const detail = cleanMessage(error?.stderr || error?.message || error);
+  if (/UnknownMethod|No such method.*FocusApplicationWindow/i.test(detail)) {
+    return {
+      ok: false,
+      code: "gnome_bridge_upgrade_required",
+      message: "GNOME is still running an older Switchboard connector. Run npm run gnome:install, then log out and back in once.",
+    };
+  }
+  return { ok: false, code: "gnome_bridge_unavailable", message: bridgeUnavailableMessage(error) };
+}
+
 async function invokeBridge(
   method,
   terminal,
@@ -219,7 +231,7 @@ export async function focusGnomeApplicationWindow(
           message: reply.message || "The application window is no longer available.",
         };
   } catch (error) {
-    return { ok: false, code: "gnome_bridge_unavailable", message: bridgeUnavailableMessage(error) };
+    return applicationBridgeFailure(error);
   }
 }
 

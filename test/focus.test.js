@@ -336,7 +336,7 @@ test("GNOME Terminal reports an unlinked tab instead of launching a replacement"
   );
 });
 
-test("VS Code focus activates the exact window for its extension host", async () => {
+test("VS Code focus asks the GNOME connector to raise a sole editor window immediately", async () => {
   const calls = [];
   let launched = false;
   const result = await focusSession(
@@ -353,16 +353,6 @@ test("VS Code focus activates the exact window for its extension host", async ()
       which: (name) => ({ code: "/usr/bin/code", gdbus: "/usr/bin/gdbus" })[name] || null,
       run: async (file, args) => {
         calls.push([file, args]);
-        if (file === "/usr/bin/code") {
-          return {
-            stdout: [
-              "CPU % Mem MB PID Process",
-              "0 400 7549 window [1] (aim-project - Visual Studio Code)",
-              "0 200 7846 extension-host [1]",
-            ].join("\n"),
-            stderr: "",
-          };
-        }
         return { stdout: "(true, 'Focused the existing VS Code window.')\n", stderr: "" };
       },
       launch: async () => {
@@ -378,7 +368,7 @@ test("VS Code focus activates the exact window for its extension host", async ()
     message: "Focused the existing VS Code window.",
   });
   assert.equal(launched, false);
-  assert.deepEqual(calls[1], [
+  assert.deepEqual(calls, [[
     "/usr/bin/gdbus",
     [
       "call",
@@ -389,14 +379,15 @@ test("VS Code focus activates the exact window for its extension host", async ()
       "/com/skylabs/AgentSwitchboard/GnomeBridge",
       "--method",
       "com.skylabs.AgentSwitchboard.GnomeBridge1.FocusApplicationWindow",
-      "7549",
+      "7846",
       "vscode",
     ],
-  ]);
+  ]]);
 });
 
-test("VS Code focus safely falls back to opening the known workspace", async () => {
-  const launches = [];
+test("VS Code focus maps the exact renderer when several editor windows exist", async () => {
+  const calls = [];
+  let bridgeCalls = 0;
   const result = await focusSession(
     liveSession({
       terminalKind: null,
@@ -404,6 +395,82 @@ test("VS Code focus safely falls back to opening the known workspace", async () 
       terminalInstance: null,
       hostApplication: "vscode",
       hostPid: 7846,
+      cwd: "/work/aim-project",
+      project: "aim-project",
+    }),
+    {
+      which: (name) => ({ code: "/usr/bin/code", gdbus: "/usr/bin/gdbus" })[name] || null,
+      run: async (file, args, options) => {
+        calls.push([file, args, options]);
+        if (file === "/usr/bin/code") {
+          assert.equal(options.timeoutMs, 8000);
+          return {
+            stdout: [
+              "CPU % Mem MB PID Process",
+              "0 400 7549 window [1] (aim-project - Visual Studio Code)",
+              "0 200 7846 extension-host [1]",
+            ].join("\n"),
+            stderr: "",
+          };
+        }
+        bridgeCalls += 1;
+        return bridgeCalls === 1
+          ? { stdout: "(false, 'Several VS Code windows are running.')\n", stderr: "" }
+          : { stdout: "(true, 'Focused the existing VS Code window.')\n", stderr: "" };
+      },
+      launch: async () => assert.fail("a live hosted session must not open another workspace"),
+    },
+  );
+
+  assert.deepEqual(result, {
+    ok: true,
+    provider: "vscode",
+    reused: true,
+    message: "Focused the existing VS Code window.",
+  });
+  assert.equal(calls[0][1].at(-2), "7846");
+  assert.deepEqual(calls[1].slice(0, 2), ["/usr/bin/code", ["--status"]]);
+  assert.equal(calls[2][1].at(-2), "7549");
+});
+
+test("VS Code focus reports an older live connector instead of opening in the background", async () => {
+  let launched = false;
+  const result = await focusSession(
+    liveSession({
+      terminalKind: null,
+      terminalTarget: null,
+      terminalInstance: null,
+      hostApplication: "vscode",
+      hostPid: 7846,
+      cwd: "/work/aim-project",
+    }),
+    {
+      which: (name) => ({ code: "/usr/bin/code", gdbus: "/usr/bin/gdbus" })[name] || null,
+      run: async () => {
+        const error = new Error("No such method FocusApplicationWindow");
+        error.stderr = "GDBus.Error:org.freedesktop.DBus.Error.UnknownMethod: No such method FocusApplicationWindow";
+        throw error;
+      },
+      launch: async () => {
+        launched = true;
+      },
+    },
+  );
+
+  assert.equal(result.ok, false);
+  assert.equal(result.code, "gnome_bridge_upgrade_required");
+  assert.match(result.message, /log out and back in once/i);
+  assert.equal(launched, false);
+});
+
+test("a legacy VS Code route without a host PID can reopen the known workspace", async () => {
+  const launches = [];
+  const result = await focusSession(
+    liveSession({
+      terminalKind: null,
+      terminalTarget: null,
+      terminalInstance: null,
+      hostApplication: "vscode",
       cwd: "/work/aim-project",
       project: "aim-project",
     }),
