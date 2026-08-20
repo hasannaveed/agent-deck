@@ -161,7 +161,7 @@ async function main() {
   if (!runtimeSupported()) {
     throw new Error(`Node.js 22.5 or newer is required; found ${process.versions.node}.`);
   }
-  if (!existsSync(path.join(ROOT, "node_modules", ".bin", "electron"))) {
+  if (!dryRun && !existsSync(path.join(ROOT, "node_modules", ".bin", "electron"))) {
     throw new Error("Dependencies are missing. Run npm ci before npm run setup.");
   }
   const gnome = gnomeConnectorPlan();

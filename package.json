@@ -16,6 +16,7 @@
   "scripts": {
     "start": "node scripts/run-desktop.js",
     "gui": "node scripts/run-desktop.js",
+    "install:user": "node scripts/quick-install.js",
     "setup": "node scripts/setup.js",
     "uninstall": "node scripts/uninstall.js",
     "desktop:install": "node scripts/install-desktop.js",

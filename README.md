@@ -24,6 +24,53 @@ graphical desktop. The native desktop pane needs a graphical session, and exact
 jumping to ordinary GNOME Terminal tabs or existing VS Code windows requires
 the bundled connector on GNOME Shell 42–44.
 
+### Quick install (recommended)
+
+Install Git and Node.js 22.5 or newer, then run:
+
+```bash
+git clone https://github.com/hasannaveed/agent-deck.git
+cd agent-deck
+./install.sh
+```
+
+That is the complete normal installation. The installer downloads the locked
+npm dependencies, safely merges the coding-harness integrations, installs the
+desktop launcher and supported GNOME connector, enables startup after login,
+runs the built-in doctor, and opens Agent Switchboard. It changes only the
+current user's files and never uses `sudo`.
+
+The command is safe to run again after an update. It preserves existing Codex
+and Claude settings and refuses malformed, linked, or foreign configuration
+destinations instead of overwriting them.
+
+Common alternatives are:
+
+```bash
+./install.sh --dry-run          # preview every managed destination
+./install.sh --no-autostart     # install without starting at login
+./install.sh --no-launch        # install without opening the pane now
+./install.sh --skip-gnome       # skip the optional GNOME connector
+./install.sh --help             # show every installer option
+```
+
+If the shell file cannot be executed because its executable bit was lost while
+copying or extracting the repository, use the equivalent npm command:
+
+```bash
+npm run install:user
+```
+
+After installation, restart coding-agent sessions that were already open. In
+Codex, open `/hooks` once and trust the new user hooks. If the installer reports
+that GNOME is still using an older connector, log out of the desktop session and
+back in once.
+
+### Manual installation and troubleshooting
+
+The steps below explain the prerequisites and individual setup stages. Most
+users can use the quick installer above instead.
+
 ### 1. Install the prerequisites
 
 You need:
@@ -229,8 +276,7 @@ machine-local integrations from that same checkout:
 
 ```bash
 git pull --ff-only
-npm ci
-npm run setup -- --no-launch
+./install.sh --no-launch
 ```
 
 Follow the connector output exactly. A connector upgrade may require one logout
@@ -288,6 +334,8 @@ not interfere with the harness.
 ## Commands
 
 ```text
+./install.sh                       recommended complete user installation
+npm run install:user               npm equivalent of ./install.sh
 npm run setup                      safely install user integrations and launcher
 npm run setup -- --autostart       also start the desktop pane after login
 npm run setup -- --dry-run         preview setup without changing anything
