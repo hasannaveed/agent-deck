@@ -45,8 +45,8 @@ export function translateClaudeEvent(raw, context = {}) {
       });
     } else if (notificationType === "idle_prompt") {
       add({
-        kind: EVENT_KINDS.ATTENTION_REQUESTED,
-        attention: { kind: "input", summary: "Claude Code is waiting for you" },
+        kind: EVENT_KINDS.WORK_COMPLETED,
+        completion: { outcome: "completed", summary: "Claude Code finished the turn" },
       });
     } else if (notificationType === "elicitation_dialog") {
       add({

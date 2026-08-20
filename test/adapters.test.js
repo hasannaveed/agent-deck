@@ -52,6 +52,20 @@ test("Claude hooks distinguish questions, completion, and failure", () => {
   const completed = translateClaudeEvent({ hook_event_name: "Stop", session_id: "claude-1" });
   assert.equal(completed[0].kind, "work_completed");
 
+  const background = translateClaudeEvent({
+    hook_event_name: "Stop",
+    session_id: "claude-1",
+    background_tasks: [{ status: "running" }],
+  });
+  assert.equal(background[0].kind, "work_started");
+
+  const backgroundCompleted = translateClaudeEvent({
+    hook_event_name: "Notification",
+    notification_type: "idle_prompt",
+    session_id: "claude-1",
+  });
+  assert.equal(backgroundCompleted[0].kind, "work_completed");
+
   const failed = translateClaudeEvent({
     hook_event_name: "StopFailure",
     session_id: "claude-1",

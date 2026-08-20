@@ -435,6 +435,17 @@ export function processActivitySample(previous, current, elapsedMs) {
 function sameProcessIncarnation(session, item) {
   if (!session || !item || session.harness !== item.harness || session.pid !== item.pid) return false;
   if (session.nativeSessionId === item.nativeSessionId) return true;
+  // A VS Code app server can host threads created before the current process,
+  // so the thread timestamp is not a process-incarnation identifier. The
+  // extension-host PID provides the stable link for this exact app server.
+  if (
+    item.hostApplication === "vscode" &&
+    session.hostApplication === item.hostApplication &&
+    Number.isInteger(item.hostPid) &&
+    session.hostPid === item.hostPid
+  ) {
+    return true;
+  }
   const sessionStartedAt = Number(session.startedAt);
   const processStartedAt = Number(item.startedAt);
   return (
@@ -568,6 +579,20 @@ export class LinuxProcessDiscovery {
     return `${this.instanceId}:${this.eventSequence}:${key}:${transition}`;
   }
 
+  markSessionGone(target, key, occurredAt = this.now()) {
+    return this.store.ingest({
+      eventId: this.eventId(key, `gone:${target.nativeSessionId}`),
+      harness: target.harness,
+      nativeSessionId: target.nativeSessionId,
+      kind: EVENT_KINDS.PROCESS_GONE,
+      nativeType: "process.exited",
+      occurredAt,
+      telemetry: "process",
+      confidence: 0.85,
+      metadata: { pid: target.pid },
+    });
+  }
+
   markGone(item, key) {
     const liveSessions = this.store
       .listLiveSessionsForPid(item.harness, item.pid)
@@ -575,17 +600,7 @@ export class LinuxProcessDiscovery {
     const targets = liveSessions.length ? liveSessions : [item];
     const occurredAt = this.now();
     for (const target of targets) {
-      this.store.ingest({
-        eventId: this.eventId(key, `gone:${target.nativeSessionId}`),
-        harness: item.harness,
-        nativeSessionId: target.nativeSessionId || item.nativeSessionId,
-        kind: EVENT_KINDS.PROCESS_GONE,
-        nativeType: "process.exited",
-        occurredAt,
-        telemetry: "process",
-        confidence: 0.85,
-        metadata: { pid: item.pid },
-      });
+      this.markSessionGone(target, key, occurredAt);
     }
   }
 
@@ -898,6 +913,9 @@ export class LinuxProcessDiscovery {
         const nativeSessions = matchingSessions.filter(
           (session) => !session.nativeSessionId.startsWith("process-"),
         );
+        const redundantProvisionals = nativeSessions.length
+          ? matchingSessions.filter((session) => session.nativeSessionId.startsWith("process-"))
+          : [];
         const targets = nativeSessions.length ? nativeSessions : [matchingSessions[0] || item];
         for (const target of targets) {
           const preserveNativeLocation =
@@ -926,6 +944,11 @@ export class LinuxProcessDiscovery {
               startedAt: item.startedAt,
             },
           });
+        }
+        for (const provisional of redundantProvisionals) {
+          if (this.store.getSession(provisional.id)?.presence !== "live") continue;
+          this.markSessionGone(provisional, `${key}:superseded`, occurredAt);
+          this.store.dismiss(provisional.id);
         }
         this.notifyProcessDiscovered(item, occurredAt);
       }

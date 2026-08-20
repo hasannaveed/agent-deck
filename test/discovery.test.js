@@ -639,11 +639,12 @@ test("process inference does not override native harness activity", () => {
   }
 });
 
-test("VS Code discovery annotates every native thread without replacing its workspace", () => {
+test("VS Code discovery matches native threads with older thread start times", () => {
   const store = new SwitchboardStore(":memory:");
   try {
     const clock = Date.now();
-    const startedAt = clock - 10_000;
+    const threadStartedAt = clock - 7 * 24 * 60 * 60 * 1000;
+    const processStartedAt = clock - 10_000;
     for (const [nativeSessionId, cwd] of [
       ["vscode-thread-one", "/work/project-one"],
       ["vscode-thread-two", "/work/project-two"],
@@ -656,7 +657,13 @@ test("VS Code discovery annotates every native thread without replacing its work
         nativeType: "SessionStart",
         occurredAt: clock - 5_000,
         telemetry: "hook",
-        metadata: { pid: 8184, cwd, startedAt },
+        metadata: {
+          pid: 8184,
+          cwd,
+          hostApplication: "vscode",
+          hostPid: 7846,
+          startedAt: threadStartedAt,
+        },
       });
     }
     const current = {
@@ -673,7 +680,7 @@ test("VS Code discovery annotates every native thread without replacing its work
       terminalInstance: null,
       hostApplication: "vscode",
       hostPid: 7846,
-      startedAt,
+      startedAt: processStartedAt,
     };
     const discovery = new LinuxProcessDiscovery({
       store,
@@ -987,6 +994,72 @@ test("discovery reuses a native PID row after restart and removes a hidden provi
     assert.equal(recent.length, 1);
     assert.equal(recent[0].id, native.session.id);
     assert.equal(recent[0].presence, "closed");
+  } finally {
+    store.close();
+  }
+});
+
+test("startup reconciliation retires a persisted VS Code provisional duplicate", () => {
+  const store = new SwitchboardStore(":memory:");
+  try {
+    const clock = Date.now();
+    const pid = 72;
+    const hostPid = 70;
+    const processStartedAt = clock - 10_000;
+    const native = store.ingest({
+      eventId: "vscode-native-before-restart",
+      harness: "codex",
+      nativeSessionId: "vscode-native-72",
+      kind: EVENT_KINDS.SESSION_STARTED,
+      nativeType: "SessionStart",
+      occurredAt: clock - 7 * 24 * 60 * 60 * 1000,
+      telemetry: "hook",
+      metadata: {
+        pid,
+        cwd: "/work/vscode-restart",
+        hostApplication: "vscode",
+        hostPid,
+      },
+    });
+    const provisional = store.ingest({
+      eventId: "vscode-provisional-before-restart",
+      harness: "codex",
+      nativeSessionId: "process-72-700",
+      kind: EVENT_KINDS.PROCESS_SEEN,
+      nativeType: "process.discovered",
+      occurredAt: clock - 60_000,
+      telemetry: "process",
+      metadata: { pid },
+    });
+    const current = {
+      processKey: "codex:72:700",
+      harness: "codex",
+      nativeSessionId: "process-72-700",
+      pid,
+      title: "Codex session",
+      cwd: null,
+      project: null,
+      terminal: null,
+      terminalKind: null,
+      terminalTarget: null,
+      terminalInstance: null,
+      hostApplication: "vscode",
+      hostPid,
+      startedAt: processStartedAt,
+    };
+    const discovery = new LinuxProcessDiscovery({
+      store,
+      scan: () => [current],
+      now: () => clock,
+      logger: { error() {} },
+    });
+
+    discovery.tick();
+
+    assert.equal(store.getSession(native.session.id).presence, "live");
+    assert.equal(store.getSession(provisional.session.id).presence, "closed");
+    assert.equal(store.getSession(provisional.session.id).dismissed, true);
+    assert.deepEqual(store.getSnapshot().sessions.map((session) => session.id), [native.session.id]);
   } finally {
     store.close();
   }
